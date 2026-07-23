@@ -10,6 +10,7 @@ if platform.machine() == 'aarch64':  # Jetson
 from dronekit import connect, Vehicle
 from core import Core
 from camera.yolocam import YoloCamera
+from filtered_vehicle import FlightControllerVehicle
 
 import argparse
 import time
@@ -136,7 +137,7 @@ def main(args):
         else:
             logging.info("Starting core")
             logging.info("Connecting to vehicle on: %s" % (args.uri,))
-            vehicle = connect(args.uri, baud=baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20)
+            vehicle = connect(args.uri, baud=baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20, vehicle_class=FlightControllerVehicle )
 
             # Setup core thread
             core = Core(vehicle, camera)
