@@ -27,6 +27,9 @@ camera: YoloCamera = None
 vehicle: Vehicle   = None
 videoWriter        = None
 
+# Set the baud rate for the connection to the vehicle. Since I have an older Pixhawk, I have to use 57600. If you have a newer flight controller, you can try 115200.
+baud_rate = 57600
+
 # See: https://stackoverflow.com/a/66209331
 class LoggerWriter:
     def __init__(self, logfct):
@@ -133,7 +136,7 @@ def main(args):
         else:
             logging.info("Starting core")
             logging.info("Connecting to vehicle on: %s" % (args.uri,))
-            vehicle = connect(args.uri, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20)
+            vehicle = connect(args.uri, baud=baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20)
 
             # Setup core thread
             core = Core(vehicle, camera)

@@ -68,7 +68,9 @@ class Core:
             if self.vehicle.armed:
                 self.vehicle.disarm()
 
-            self.state = ExecutionState.AwaitingArm
+            # Only reset to AwaitingArm if we're not already in a takeoff sequence
+            if self.state in [ExecutionState.Init, ExecutionState.PilotOnly, ExecutionState.ConnectionLoss]:
+                self.state = ExecutionState.AwaitingArm
 
     def armedCallback(self, _, _1, _2) -> None:
         print("Vehicle armed %d" % (self.vehicle.armed,))

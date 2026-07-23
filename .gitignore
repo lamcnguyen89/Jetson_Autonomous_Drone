@@ -154,3 +154,6 @@ working/
 videos/
 terrain/
 eeprom.bin
+
+# Depthai-repo
+depthai-python/
