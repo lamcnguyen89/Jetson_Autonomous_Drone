@@ -1,7 +1,14 @@
 from typing import Tuple
 from pymavlink import mavutil
 from dronekit import Vehicle
-from constants import ALTITUDE, SPEED
+from constants import (
+    ALTITUDE,
+    ALTITUDE_VELOCITY_GAIN,
+    FOLLOW_POSITION_DEADBAND,
+    FOLLOW_VELOCITY_GAIN,
+    MAX_VERTICAL_SPEED,
+    SPEED,
+)
 
 import math
 
@@ -10,6 +17,48 @@ LOITER_POSITION = {
     "latitude": 0,
     "longitude": 0
 }
+
+# Restrict a controller output to a safe minimum and maximum value.
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(value, maximum))
+
+# Convert forward/right position errors in meters into body-frame velocities.
+# Small errors are ignored to prevent jitter, and the combined horizontal
+# velocity is limited so diagonal movement cannot exceed SPEED.
+def positionErrorToHorizontalVelocity(
+    forwardError: float,
+    rightError: float,
+) -> Tuple[float, float]:
+    if abs(forwardError) <= FOLLOW_POSITION_DEADBAND:
+        forwardError = 0.0
+    if abs(rightError) <= FOLLOW_POSITION_DEADBAND:
+        rightError = 0.0
+
+    forwardVelocity = forwardError * FOLLOW_VELOCITY_GAIN
+    rightVelocity = rightError * FOLLOW_VELOCITY_GAIN
+
+    # Limit total horizontal speed, including diagonal movement.
+    magnitude = math.hypot(forwardVelocity, rightVelocity)
+    if magnitude > SPEED:
+        scale = SPEED / magnitude
+        forwardVelocity *= scale
+        rightVelocity *= scale
+
+    return forwardVelocity, rightVelocity
+
+# Convert home-relative altitude error into an NED vertical velocity.
+# NED is positive downward, so being below ALTITUDE produces a negative
+# velocity (climb); the result is capped for a controlled correction.
+def altitudeErrorToVerticalVelocity(currentAltitude: float) -> float:
+    # MAVLink NED uses positive Z velocity for down and negative for up.
+    verticalVelocity = (
+        currentAltitude - ALTITUDE
+    ) * ALTITUDE_VELOCITY_GAIN
+    return clamp(
+        verticalVelocity,
+        -MAX_VERTICAL_SPEED,
+        MAX_VERTICAL_SPEED,
+    )
 
 def setYaw(vehicle: Vehicle, relativeYaw: float) -> None:
     msg = vehicle.message_factory.command_long_encode(
@@ -24,6 +73,88 @@ def setYaw(vehicle: Vehicle, relativeYaw: float) -> None:
 
     vehicle.send_mavlink(msg)
     vehicle.flush()
+
+
+"""
+
+This target position function was created in order to deal with the issue that when the drone moves horizontally, it begins to drift towards the ground. This function calculates the velocity in the NED frame based on the position offsets and sends it to the drone, which should help maintain altitude while moving horizontally.
+
+"""
+
+def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: float) -> None:
+    global IS_LOITER
+
+    forwardError, rightError = position
+
+    if forwardError == 0 and rightError == 0:
+        # Loiter in place with guided mode
+        setLoiterGuided(vehicle, yawRate)
+    else:
+        IS_LOITER = False
+
+        forwardVelocity, rightVelocity = positionErrorToHorizontalVelocity(
+            forwardError,
+            rightError,
+        )
+        currentAltitude = vehicle.location.global_relative_frame.alt
+        verticalVelocity = altitudeErrorToVerticalVelocity(currentAltitude)
+
+        # Enable velocity and yaw-rate; ignore position, acceleration, and yaw.
+        ignorePositionMask = 0b111
+        ignoreAccelMask = 0b111000000
+        ignoreYaw = 0b10000000000
+        type_mask = ignorePositionMask | ignoreAccelMask | ignoreYaw
+
+        msg = vehicle.message_factory.set_position_target_local_ned_encode(
+            0,       # time_boot_ms (not used)
+            0, 0,    # target system, target component
+            mavutil.mavlink.MAV_FRAME_BODY_OFFSET_NED,
+            type_mask,
+            0, 0, 0, # x, y, z position (not used)
+            forwardVelocity, rightVelocity, verticalVelocity,
+            0, 0, 0, # x, y, z acceleration (not used)
+            0, math.radians(yawRate))    # yaw, yaw_rate
+
+        vehicle.send_mavlink(msg)
+
+
+
+def setLoiterGuided(vehicle: Vehicle, yawRate: float) -> None:
+    global IS_LOITER
+    global LOITER_POSITION
+
+    if IS_LOITER != True:
+        IS_LOITER = True
+
+        # update position
+        frame = vehicle.location.global_relative_frame
+        LOITER_POSITION = {
+            "latitude": frame.lat,
+            "longitude": frame.lon
+        }
+
+    ignoreVelocityMask =  0b111000
+    ignoreAccelMask =  0b111000000
+    ignoreYaw = 0b10000000000
+    emptyMask = 0b0000000000000000
+
+    msg = vehicle.message_factory.set_position_target_global_int_encode(
+        0,       # time_boot_ms (not used)
+        0, 0,    # target system, target component
+        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, # frame
+        emptyMask + ignoreAccelMask + ignoreVelocityMask + ignoreYaw, # type_mask (only speeds enabled)
+        int(LOITER_POSITION["latitude"] * 1e7), # lat_int - X Position in WGS84 frame in 1e7 * meters
+        int(LOITER_POSITION["longitude"] * 1e7), # lon_int - Y Position in WGS84 frame in 1e7 * meters
+        ALTITUDE,
+        0, # X velocity in NED frame in m/s
+        0, # Y velocity in NED frame in m/s
+        0, # Z velocity in NED frame in m/s
+        0, 0, 0, # afx, afy, afz acceleration
+        0, math.radians(yawRate))    # yaw, yaw_rate (rad/s)
+
+    vehicle.send_mavlink(msg)
+
+
 """
 # The original setPositionTarget function was commented out because it was not working as intended. The new implementation below uses a proportional controller to convert position offsets into velocity commands, which should provide smoother and more responsive control.
 
@@ -83,64 +214,6 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
         vehicle.send_mavlink(msg)
 """
 
-
-"""
-
-This target position function was created in order to deal with the issue that when the drone moves horizontally, it begins to drift towards the ground. This function calculates the velocity in the NED frame based on the position offsets and sends it to the drone, which should help maintain altitude while moving horizontally.
-
-Key Changes Explained:
-Velocity Commands (Lines 14-17): Converts position offsets to velocities using a proportional gain (0.5). Distance is multiplied by the gain and capped at SPEED (1.0 m/s).
-
-Altitude Velocity Control (Lines 19-22): Instead of position offset, calculates a vertical velocity based on altitude error. Positive error (need to climb) results in negative velocity (up is negative in NED). Capped at ±0.5 m/s for smooth control.
-
-Type Mask (Lines 24-28):
-
-0b0000111 ignores X, Y, Z position commands (bits 0, 1, 2)
-Enables X, Y, Z velocity commands (bits 3, 4, 5 are NOT set)
-Still ignores acceleration and yaw position
-Frame Change (Line 33): Changed from MAV_FRAME_BODY_OFFSET_NED to MAV_FRAME_BODY_NED since we're using velocities, not position offsets.
-"""
-
-def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: float) -> None:
-    global IS_LOITER
-
-    localNorth, localEast = position
-
-    if localNorth == 0 and localEast == 0:
-        # Loiter in place with guided mode
-        setLoiterGuided(vehicle, yawRate)
-    else:
-        IS_LOITER = False
-
-        # Calculate velocities from position offsets
-        # Use a simple proportional controller to convert distance to velocity
-        # Cap at SPEED (1.0 m/s from constants)
-        velocityNorth = max(-SPEED, min(SPEED, localNorth * 0.5))  # 0.5 is a gain factor
-        velocityEast = max(-SPEED, min(SPEED, localEast * 0.5))
-        
-        # Calculate vertical velocity for altitude correction
-        currentAltitude = vehicle.location.global_relative_frame.alt
-        altitudeError = ALTITUDE - currentAltitude
-        velocityDown = -max(-0.5, min(0.5, altitudeError * 0.8))  # Up is negative, capped at 0.5 m/s
-        
-        # Type mask: ignore position (bits 0,1,2), ignore acceleration (bits 6,7,8), ignore yaw (bit 10)
-        ignorePositionMask = 0b0000111  # Ignore X, Y, Z position
-        ignoreAccelMask = 0b111000000
-        ignoreYaw = 0b10000000000
-        
-        type_mask = ignorePositionMask + ignoreAccelMask + ignoreYaw
-
-        msg = vehicle.message_factory.set_position_target_local_ned_encode(
-            0,       # time_boot_ms (not used)
-            0, 0,    # target system, target component
-            mavutil.mavlink.MAV_FRAME_BODY_NED,  # Body frame (not offset)
-            type_mask,
-            0, 0, 0,  # x, y, z position (not used due to mask)
-            velocityNorth, velocityEast, velocityDown,  # velocities in m/s
-            0, 0, 0,  # x, y, z acceleration (not used)
-            0, math.radians(yawRate))    # yaw, yaw_rate
-
-        vehicle.send_mavlink(msg)
 """
 # Position-Based Altitude with Velocity Horizontal. This provides even more stable altitude hold by using a hybrid approach of global altitude position + body frame horizontal velocity.
 
@@ -174,39 +247,3 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
         vehicle.send_mavlink(msg)
 
 """
-
-
-def setLoiterGuided(vehicle: Vehicle, yawRate: float) -> None:
-    global IS_LOITER
-    global LOITER_POSITION
-
-    if IS_LOITER != True:
-        IS_LOITER = True
-
-        # update position
-        frame = vehicle.location.global_relative_frame
-        LOITER_POSITION = {
-            "latitude": frame.lat,
-            "longitude": frame.lon
-        }
-
-    ignoreVelocityMask =  0b111000
-    ignoreAccelMask =  0b111000000
-    ignoreYaw = 0b10000000000
-    emptyMask = 0b0000000000000000
-
-    msg = vehicle.message_factory.set_position_target_global_int_encode(
-        0,       # time_boot_ms (not used)
-        0, 0,    # target system, target component
-        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, # frame
-        emptyMask + ignoreAccelMask + ignoreVelocityMask + ignoreYaw, # type_mask (only speeds enabled)
-        int(LOITER_POSITION["latitude"] * 1e7), # lat_int - X Position in WGS84 frame in 1e7 * meters
-        int(LOITER_POSITION["longitude"] * 1e7), # lon_int - Y Position in WGS84 frame in 1e7 * meters
-        ALTITUDE,
-        0, # X velocity in NED frame in m/s
-        0, # Y velocity in NED frame in m/s
-        0, # Z velocity in NED frame in m/s
-        0, 0, 0, # afx, afy, afz acceleration
-        0, math.radians(yawRate))    # yaw, yaw_rate (rad/s)
-
-    vehicle.send_mavlink(msg)
