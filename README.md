@@ -3,9 +3,12 @@ Code for Autonomous Drone using Jetson Orin Nano, the Herelink Video/RC System, 
 
 ## Installation and systemd startup
 
-The installer targets Ubuntu/Debian with systemd (the Jetson uses Ubuntu 22.04).
+The installer targets a Jetson with Ubuntu/Debian, systemd, and JetPack's
+TensorRT 10.x / CUDA 12 runtime (this Jetson uses Ubuntu 22.04).
 It installs native packages with APT and Python packages into `.venv` in the
-project root. Python 3.9-3.12 is supported; Ubuntu 22.04's Python 3.10 works.
+project root. `BASE_PYTHON` must match the installed JetPack TensorRT Python
+bindings; Ubuntu 22.04's Python 3.10 works on this Jetson. The base flight
+dependencies support Python 3.9-3.12.
 Python packages and the pip cache are owned by `SERVICE_USER`, not root.
 
 Keep machine settings in `.env` in the project root (ignored by Git). On a new
@@ -35,6 +38,15 @@ From the project root, install the flight runtime and enable startup at boot:
 ```bash
 sudo ./scripts/Install_Auto_Drone.sh
 ```
+
+This installs both Luxonis and Jetson inference dependencies and automatically
+prepares the YOLO26m TensorRT engine at `JETSON_MODEL_PATH` (or its default).
+No Jetson flag or separate model preparation command is required. A valid
+existing engine is reused after checking its manifest, checksum, TensorRT
+version, and GPU execution. Missing, damaged, or incompatible artifacts are
+rebuilt. The initial preparation downloads pretrained weights and can take
+several minutes; the measured first build on this Jetson took about 13 minutes.
+The installer preserves your `.env` and its selected inference backend.
 
 The script discovers the project location, so an absolute path to the installer
 also works from another working directory. It validates dependencies and the
@@ -300,15 +312,153 @@ later. Other aircraft alarms can interrupt a tune. See the
 [ArduPilot tune implementation](https://github.com/ArduPilot/ardupilot/blob/master/libraries/AP_Notify/ToneAlarm.cpp),
 and [ArduPilot routing guide](https://ardupilot.org/dev/docs/mavlink-routing-in-ardupilot.html).
 
+## Select inference processing: OAK or Jetson
+
+Both backends use the OAK RGB camera and stereo depth sensors. Select the
+processor in the project `.env` and restart the service while the vehicle is
+disarmed:
+
+```dotenv
+INFERENCE_BACKEND=luxonis
+LUXONIS_MODEL_PATH=models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob
+JETSON_MODEL_PATH=models/yolo26m-fp16.engine
+PERCEPTION_MAX_AGE_SECONDS=0.3
+TARGET_LOST_TIMEOUT_SECONDS=2.0
+```
+
+Set `INFERENCE_BACKEND=jetson` for **YOLO26m with TensorRT FP16 on GPU 0**.
+Set it to `luxonis` to retain TinyYOLO v4 inference on the OAK VPU. Existing
+`.env` files without these options default to Luxonis. Paths are relative to
+the project root, regardless of the process working directory. Process
+environment values override `.env`; restart after changes. Invalid backends
+fail configuration validation; there is no automatic CPU or OAK fallback when
+Jetson mode fails.
+
+### Prepare YOLO26m on the Jetson
+
+The GPU backend targets JetPack's TensorRT 10.x and CUDA 12 runtime. On the
+development Orin NX this is TensorRT 10.7 / CUDA 12.6 with Python 3.10. Keep the
+JetPack runtime; do not replace it with an unrelated PyPI TensorRT version.
+The normal installer installs both backends and prepares the model automatically:
+
+```bash
+sudo bash scripts/Install_Auto_Drone.sh
+```
+
+The former `--with-jetson` flag is still accepted for compatibility and is no
+longer necessary. The installer invokes `scripts/prepare_jetson_model.py
+--if-needed` as `SERVICE_USER` before installing/enabling or restarting the
+service. Preparation failure aborts the installation before those service
+changes. The script can still be run directly for maintenance:
+
+```bash
+# Check and reuse the engine, or prepare it if needed:
+.venv/bin/python scripts/prepare_jetson_model.py --if-needed
+
+# Force a fresh export and build:
+.venv/bin/python scripts/prepare_jetson_model.py
+```
+
+The preparation script never opens the camera or MAVLink port or changes the
+service. It downloads official `yolo26m.pt` weights to `models/`, exports a static
+640x640, batch-one, end-to-end ONNX model, then builds an FP16 TensorRT engine on
+this Jetson. Initial preparation requires internet access and can take several
+minutes. The script validates the model and runs GPU warmup before publishing
+the engine and its checksum manifest. Generated artifacts are ignored by Git.
+Rebuild after changing the Jetson hardware or TensorRT runtime. Exported
+YOLO26m ONNX can also be supplied with `--onnx models/yolo26m.onnx` to skip the
+PyTorch export. The default engine is `models/yolo26m-fp16.engine`; startup
+requires its companion `.json` manifest.
+
+PyTorch is used on CPU for model export and tracker utilities. Flight-time
+neural network inference uses TensorRT and CUDA directly, so a CUDA-enabled
+PyTorch build and CUDA-enabled OpenCV are unnecessary. Only the installed
+JetPack TensorRT package is loaded from the system when absent from the venv;
+other system Python packages are not added to the isolated environment.
+
+Test actual GPU inference and BoT-SORT without claiming the OAK or connecting
+to the flight controller:
+
+```bash
+.venv/bin/python utils/check_jetson_inference.py --image /path/to/person.jpg
+```
+
+This reports detector-plus-tracker timing on repeated copies of the image;
+it does not measure camera transfer, depth calculation, or flight control.
+
+Validation on the development Orin NX (November 20, 2026): the FP16 engine
+detected the same four people as the PyTorch reference on Ultralytics' `bus.jpg`,
+with matched box IoUs above 0.998. On 100 repeats of a 640x360 version of the
+image, preprocessing/TensorRT/decoding averaged 32.4 ms and BoT-SORT averaged
+10.5 ms (42.9 ms combined mean, 50.7 ms combined p95). These are image benchmark
+measurements, not live-camera throughput guarantees. The flight service stayed
+on Luxonis throughout validation, so live RGB/depth alignment and capture-to-
+result latency remain to be checked using the camera-only utility below.
+
+After the engine is prepared, change `.env` to `INFERENCE_BACKEND=jetson` and,
+while disarmed, restart with `sudo systemctl restart Auto_Drone.service`.
+Switch back with `INFERENCE_BACKEND=luxonis` and the same restart. Preparation
+alone does not switch the running service.
+
+### Tracking and depth contract
+
+Jetson mode runs the OAK's RGB acquisition and stereo depth pipeline without
+an OAK neural network node. DepthAI Sync groups pair 640x360 RGB ISP images
+with RGB-aligned depth within 15 ms; the host output queue holds at most one
+group. RGB is letterboxed to 640x640 for YOLO26m and decoded boxes are mapped
+back into the original image. A calibrated projection of the median valid
+depth in the central half of each box produces `Detection(x, y, z, confidence,
+fps, track_id)`. Coordinates retain the existing convention: meters, X right,
+Y up, Z forward. Depth outside 250–10000 mm, inadequate valid depth, and people
+at or below 0.5 m are rejected.
+
+BoT-SORT uses sparse optical flow camera-motion compensation. Its explicit
+configuration lives in `src/camera/botsort.yaml`; appearance re-identification
+is disabled, so IDs are associations rather than guaranteed person identity.
+Low-confidence detections assist association, but flight-facing results must
+pass `DETECTION_THRESH`. New tracks require at least the higher of that setting
+and BoT-SORT's high-confidence threshold (0.25 by default).
+
+The nearest valid person is selected initially. `closestDetection()` then
+returns that track while other people pass closer. If its detection or valid
+depth disappears, tracking movement holds for `TARGET_LOST_TIMEOUT_SECONDS`.
+After that interval the lock is released and another nearest valid person may
+be selected. With a healthy pipeline and no target, the existing search rule
+operates. This policy allows target changes after the timeout; it is not a
+permanent identity lock or a person re-identification system.
+
+Both real backends enforce capture-age freshness, including USB transfer and
+inference time. Empty current batches count as healthy output. Failed, stopped,
+or stale perception suppresses follow/backoff and search movement in favor of
+the existing guided hold command. Startup readiness requires the first current
+batch. Logs identify the backend and device; Jetson mode additionally reports
+capture-to-result latency, processing FPS, and selected track ID every five
+seconds. A persistent stale feed remains in hold until current output resumes.
+
+For a live camera-only preview, stop the flight service while disarmed to
+release the OAK, then run `.venv/bin/python utils/camera.py` (or add
+`--headless --seconds 30`). It uses the selected backend and never connects to
+MAVLink. The camera cannot be shared with the running flight service. Verify
+RGB/depth alignment and latency on this path before flight; use USB 3 where
+available. The 0.3-second age budget is an initial limit to validate on the
+actual pipeline, not a measured latency guarantee.
+
+References: [Ultralytics Jetson deployment](https://docs.ultralytics.com/guides/nvidia-jetson),
+[YOLO26 models](https://docs.ultralytics.com/models/yolo26),
+[BoT-SORT integration](https://docs.ultralytics.com/modes/track), and
+[TensorRT engine compatibility](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/engine-compatibility.html).
+
 ## Packages
 
-Pinned direct Python dependencies are in `requirements.txt` and
-`simulation/requirements.txt`. Pip also installs their transitive dependencies.
+Pinned direct Python dependencies are in `requirements.txt`,
+`requirements-jetson.txt`, and `simulation/requirements.txt`. The installer
+includes Jetson dependencies by default. Pip also installs transitive dependencies.
 
 | Purpose | Python packages |
 | --- | --- |
 | Flight-controller connection | `dronekit`, `pymavlink`, `pyserial`, `future` |
 | OAK-D camera and video | `depthai`, `numpy`, `opencv-python` |
+| YOLO26m export and BoT-SORT | `ultralytics`, `torch`, `torchvision`, `scipy`, `lap`, `onnx` |
 | Flight settings | `python-dotenv` |
 | Optional simulation/tests | `dronekit-sitl`, `gpxpy`, `websockets`, `pytest` |
 
@@ -328,6 +478,7 @@ System packages installed by the script:
 - USB and video libraries: `libusb-1.0-0`, `libudev1`, `libgl1`, `libglib2.0-0`
   (or `libglib2.0-0t64` on newer distributions), `libsm6`, `libxext6`, `libxrender1`.
 - Service, device and account tools: `systemd`, `udev`, `usbutils`, `passwd`.
+- JetPack TensorRT tools and Python bindings: `libnvinfer-bin`, `python3-libnvinfer`.
 
 APT packages, account group membership, the generated unit, systemd's boot links,
 and the rules under `/etc/udev/rules.d/` live outside the project. The installer

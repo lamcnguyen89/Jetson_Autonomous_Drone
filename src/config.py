@@ -123,6 +123,55 @@ def load_notification_settings(
     return NotificationSettings(**parsed)
 
 
+@dataclass(frozen=True)
+class InferenceSettings:
+    backend: str = 'luxonis'
+    luxonis_model_path: Path = ENV_FILE.parent / 'models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob'
+    jetson_model_path: Path = ENV_FILE.parent / 'models/yolo26m-fp16.engine'
+    max_age: float = 0.3
+    target_lost_timeout: float = 2.0
+
+    def __post_init__(self):
+        if self.backend not in ('luxonis', 'jetson'):
+            raise ConfigurationError('INFERENCE_BACKEND must be luxonis or jetson')
+        for name in ('max_age', 'target_lost_timeout'):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                key = 'PERCEPTION_MAX_AGE_SECONDS' if name == 'max_age' else 'TARGET_LOST_TIMEOUT_SECONDS'
+                raise ConfigurationError(f'{key} must be finite and greater than zero')
+
+
+def load_inference_settings(env_file: Path = ENV_FILE, environ=None) -> InferenceSettings:
+    # Defaults preserve existing installations whose .env predates backend selection.
+    values = _read_values(env_file, environ)
+    defaults = InferenceSettings()
+    parsed = {}
+    for field, key in (
+        ('backend', 'INFERENCE_BACKEND'),
+        ('luxonis_model_path', 'LUXONIS_MODEL_PATH'),
+        ('jetson_model_path', 'JETSON_MODEL_PATH'),
+        ('max_age', 'PERCEPTION_MAX_AGE_SECONDS'),
+        ('target_lost_timeout', 'TARGET_LOST_TIMEOUT_SECONDS'),
+    ):
+        value = values.get(key, getattr(defaults, field))
+        if value is None or not str(value).strip():
+            raise ConfigurationError(f'Set {key} in {env_file}')
+        if field.endswith('_path'):
+            value = Path(value)
+            if not value.is_absolute():
+                value = ENV_FILE.parent / value
+        elif field in ('max_age', 'target_lost_timeout'):
+            try:
+                value = float(value)
+            except (ValueError, TypeError) as error:
+                raise ConfigurationError(f'{key} must be a number') from error
+        else:
+            value = str(value).strip().lower()
+        parsed[field] = value
+    return InferenceSettings(**parsed)
+
+
 # Immutable for the lifetime of this process; restart after editing flight values.
 settings = load_settings()
 notification_settings = load_notification_settings()
+inference_settings = load_inference_settings()

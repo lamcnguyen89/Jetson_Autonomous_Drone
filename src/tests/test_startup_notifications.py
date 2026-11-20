@@ -140,7 +140,7 @@ def main_runtime(tmp_path, monkeypatch):
     camera = SimpleNamespace(start=lambda: events.append('camera-start'),
                              stop=lambda: events.append('camera-stop'))
     vehicle = SimpleNamespace(close=lambda: events.append('vehicle-close'))
-    monkeypatch.setattr(app, 'YoloCamera', lambda callback: camera)
+    monkeypatch.setattr(app, 'create_camera', lambda callback: camera)
     monkeypatch.setattr(app, 'connect', lambda *args, **kwargs: vehicle)
     monkeypatch.setattr(app.time, 'sleep', lambda duration: setattr(app, 'EXIT', True))
     args = SimpleNamespace(log_path=str(tmp_path), video=False, video_path=str(tmp_path),

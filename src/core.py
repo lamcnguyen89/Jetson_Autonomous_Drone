@@ -124,6 +124,14 @@ class Core:
     #### State machine
 
     def _rule_command(self):
+        # A stale/failed camera is different from a healthy frame with no people.
+        # Do not feed stale positions to follow/backoff or trigger search yaw.
+        tracking_hold = getattr(self.camera, 'tracking_hold', lambda: False)
+        if not self.camera.running() or tracking_hold():
+            if self.activeRule != 'perception_hold':
+                logger.warning('Perception unavailable or target temporarily lost; holding tracking movement')
+            self.activeRule = 'perception_hold'
+            return ((0.0, 0.0), 0.0)
         previous_rule = self.activeRule
         for rule in self.rules:
             rule.update()

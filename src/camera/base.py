@@ -6,6 +6,9 @@ class BaseCamera:
     def running(self):
         return False
 
+    def tracking_hold(self):
+        return False
+
     def detections(self):
         return []
 

@@ -20,9 +20,27 @@ def installer(tmp_path):
     (project / 'scripts').mkdir(parents=True)
     (project / 'src').mkdir()
     (project / 'src/main.py').write_text('raise SystemExit(0)\n')
+    # Stub the hardware/dependency checks while exercising the actual installer.
+    camera = project / 'src/camera'
+    camera.mkdir()
+    (camera / '__init__.py').write_text('')
+    (camera / 'tensorrt_yolo.py').write_text(
+        'from types import SimpleNamespace\n'
+        'def load_tensorrt(): return SimpleNamespace(__version__="10.7.0")\n')
+    (camera / 'jetson.py').write_text('def create_tracker(): pass\n')
+    (project / 'scripts/prepare_jetson_model.py').write_text('''
+import json, os, sys
+from pathlib import Path
+with open(os.environ['TEST_CALLS'], 'a') as log:
+    log.write(json.dumps(['prepare-model', *sys.argv[1:]]) + '\\n')
+state = json.loads(Path(os.environ['TEST_STATE']).read_text())
+if state.get('model_preparation_fails'):
+    raise SystemExit('Simulated model preparation failure')
+''')
     for name in ('Auto_Drone.service', '80-auto-drone-oak.rules', 'mavlink_udev.py'):
         shutil.copy2(ROOT / 'scripts' / name, project / 'scripts' / name)
     (project / 'requirements.txt').write_text('')
+    (project / 'requirements-jetson.txt').write_text('-r requirements.txt\n')
     units, rules, commands = [tmp_path / name for name in ('units', 'rules', 'bin')]
     for directory in (units, rules, commands):
         directory.mkdir()
@@ -212,3 +230,28 @@ def test_existing_non_file_env_is_not_replaced(installer):
     assert config.is_symlink()
     assert not (project / 'missing-target').exists()
     assert not calls
+
+
+@pytest.mark.parametrize('flags', [(), ('--with-jetson',)])
+def test_default_installs_both_backends_and_prepares_model_before_service(installer, flags):
+    run, project, _, _, _ = installer
+    result, calls = run(*flags)
+    assert result.returncode == 0, result.stdout + result.stderr
+    packages = next(c for c in calls if c[:2] == ['apt-get', 'install'])
+    assert 'libnvinfer-bin' in packages and 'python3-libnvinfer' in packages
+    assert any(str(project / 'requirements-jetson.txt') in c for c in calls)
+    prepare = calls.index(['prepare-model', '--if-needed'])
+    enable = calls.index(['systemctl', 'enable', 'Auto_Drone.service'])
+    assert prepare < enable
+    assert sum(c[0] == 'prepare-model' for c in calls) == 1
+    assert not any(c[:2] == ['systemctl', 'restart'] for c in calls)
+
+
+def test_model_preparation_failure_prevents_service_install_or_restart(installer):
+    run, _, units, _, _ = installer
+    result, calls = run('--start', model_preparation_fails=True)
+    assert result.returncode != 0
+    assert 'Simulated model preparation failure' in result.stderr
+    assert ['prepare-model', '--if-needed'] in calls
+    assert not (units / 'Auto_Drone.service').exists()
+    assert not any(c[0] == 'systemctl' for c in calls)

@@ -1,0 +1,10 @@
+# YOLO26m export and BoT-SORT dependencies, included by the default installer.
+# CUDA inference uses JetPack TensorRT directly; PyTorch runs on CPU for
+# export/tracking.
+-r requirements.txt
+ultralytics==8.4.216
+torch==2.8.0
+torchvision==0.23.0
+scipy==1.15.3
+lap==0.5.12
+onnx==1.17.0

@@ -3,7 +3,8 @@ set -euo pipefail
 
 usage() {
     echo "Usage: sudo $0 [--with-sitl] [--start]"
-    echo "Install system packages, project .venv, serial/USB permissions and the service."
+    echo "Install both inference backends, project .venv, permissions and the service."
+    echo "Prepare YOLO26m automatically when no valid TensorRT engine is available."
     echo "Creates a missing .env from .env.example; keeps existing configuration."
     echo "Connect the MAVLink controller and check the configured port before running."
     echo "  --with-sitl  Also install simulation and test dependencies."
@@ -16,6 +17,7 @@ while (( $# )); do
     case "$1" in
         --start) start_service=true ;;
         --with-sitl) with_sitl=true ;;
+        --with-jetson) : ;; # Accepted for compatibility; Jetson setup is now the default.
         -h|--help) usage; exit 0 ;;
         *) usage >&2; exit 1 ;;
     esac
@@ -119,6 +121,7 @@ system_packages=(
     build-essential pkg-config libxml2-dev libxslt1-dev zlib1g-dev
     libusb-1.0-0 libudev1 libgl1 libsm6 libxext6 libxrender1
     systemd udev usbutils passwd
+    libnvinfer-bin python3-libnvinfer
 )
 apt-get update
 if apt-cache show libglib2.0-0t64 >/dev/null 2>&1; then
@@ -180,15 +183,25 @@ PY
 # Run pip as the service user and only inside .venv, not the system interpreter.
 run_as_service_user "$venv_python" -m pip install --upgrade \
     'pip<26' 'setuptools<81' 'wheel<0.46'
-requirements="$project_root/requirements.txt"
-if [[ "$with_sitl" == true ]]; then
-    requirements="$project_root/simulation/requirements.txt"
-fi
 # Require published camera/array/OpenCV wheels instead of starting large native
 # builds on a Jetson. The pinned versions have ARM64 wheels for Python 3.9-3.12.
 run_as_service_user "$venv_python" -m pip install \
-    --only-binary=depthai,numpy,opencv-python -r "$requirements"
+    --only-binary=depthai,numpy,opencv-python -r "$project_root/requirements-jetson.txt"
+if [[ "$with_sitl" == true ]]; then
+    run_as_service_user "$venv_python" -m pip install \
+        --only-binary=depthai,numpy,opencv-python -r "$project_root/simulation/requirements.txt"
+fi
+run_as_service_user env PYTHONPATH="$project_root/src" YOLO_AUTOINSTALL=false \
+    "$venv_python" - <<'PY'
+from camera.tensorrt_yolo import load_tensorrt
+from camera.jetson import create_tracker
+print('JetPack TensorRT:', load_tensorrt().__version__)
+create_tracker()
+PY
 run_as_service_user "$venv_python" -m pip check
+# Reuse a validated engine; otherwise download/export/build as the service user.
+# Complete preparation before installing/enabling/restarting the flight service.
+run_as_service_user "$venv_python" "$project_root/scripts/prepare_jetson_model.py" --if-needed
 # --help imports the flight application without opening hardware or flying.
 run_as_service_user "$venv_python" "$project_root/src/main.py" --help >/dev/null
 if [[ "$with_sitl" == true ]]; then

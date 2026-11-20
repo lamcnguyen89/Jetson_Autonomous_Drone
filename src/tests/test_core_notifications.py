@@ -21,7 +21,7 @@ def test_core_instances_do_not_share_rules():
 
 def test_only_highest_priority_active_rule_is_reported():
     reported = []
-    core = Core(fake_vehicle(), object(), SimpleNamespace(update_rule=reported.append))
+    core = Core(fake_vehicle(), SimpleNamespace(running=lambda: True), SimpleNamespace(update_rule=reported.append))
     def rule(name, command):
         return SimpleNamespace(update=lambda: None, isActive=lambda: True,
                                getState=lambda: command, name=lambda: name)
@@ -34,7 +34,7 @@ def test_only_highest_priority_active_rule_is_reported():
 def test_notifier_exception_does_not_prevent_movement_command(monkeypatch, caplog):
     def fail(rule):
         raise OSError('Simulated notifier failure')
-    core = Core(fake_vehicle(), object(), SimpleNamespace(update_rule=fail))
+    core = Core(fake_vehicle(), SimpleNamespace(running=lambda: True), SimpleNamespace(update_rule=fail))
     core.rules = [SimpleNamespace(update=lambda: None, isActive=lambda: True,
                                  getState=lambda: ((1, 2), 3), name=lambda: 'follow')]
     core.state = ExecutionState.Running
@@ -47,7 +47,7 @@ def test_notifier_exception_does_not_prevent_movement_command(monkeypatch, caplo
 
 
 def test_every_rule_transition_is_logged_even_when_notifications_are_suppressed(caplog):
-    core = Core(fake_vehicle(), object(), SimpleNamespace(update_rule=lambda rule: False))
+    core = Core(fake_vehicle(), SimpleNamespace(running=lambda: True), SimpleNamespace(update_rule=lambda rule: False))
     active = ['follow']
     core.rules = [SimpleNamespace(update=lambda: None, isActive=lambda: True,
                                  getState=lambda: ((1, 2), 3), name=lambda: active[0])]

@@ -1,5 +1,5 @@
-from .base import BaseCamera
 from .detection import Detection
+from .runtime import PerceptionCamera, capture_time
 
 from pathlib import Path
 import depthai as dai
@@ -9,7 +9,7 @@ import cv2
 import threading
 import logging
 
-from config import settings
+from config import settings, inference_settings
 
 THREAD_STOP = False
 BLOB_PATH   = str((Path(__file__).parent / Path('../../models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
@@ -31,6 +31,8 @@ def thread(callback, _pipeline, outputFrames):
     global THREAD_STOP, RUNNING
 
     with dai.Device(_pipeline) as device:
+        logger.info('Inference ready: backend=Luxonis model=TinyYOLOv4 device=OAK-VPU USB=%s',
+                    device.getUsbSpeed())
         # Output queues will be used to get the rgb frames and nn data from the outputs defined above
         previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
         detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
@@ -111,7 +113,7 @@ def thread(callback, _pipeline, outputFrames):
                     cv2.putText(frame, f"Y (m): {closest.y:.2f}", (xStart, yHeight*2), font, fontSize, color)
                     cv2.putText(frame, f"Z (m): {closest.z:.2f}", (xStart, yHeight*3), font, fontSize, color)
 
-            callback(personDetections, frame if outputFrames else None)
+            callback(personDetections, frame if outputFrames else None, capture_time(inDet, dai))
 
         RUNNING = False
 
@@ -122,7 +124,7 @@ def thread(callback, _pipeline, outputFrames):
 
         print('Camera has stopped')
 
-class YoloCamera(BaseCamera):
+class YoloCamera(PerceptionCamera):
 
     _thread = None
     _detections = []
@@ -131,10 +133,8 @@ class YoloCamera(BaseCamera):
     def previewSize():
         return (416, 416)
 
-    def __init__(self, callback = None):
-        self.ready_event = threading.Event()
-        self.stopped_event = threading.Event()
-        self.error = None
+    def __init__(self, callback=None, config=inference_settings):
+        super().__init__(callback, config)
         self._detections = []
         self._thread = None
         self.setup()
@@ -171,7 +171,7 @@ class YoloCamera(BaseCamera):
         # setting node configs
         self._stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
-        self._spatialDetectionNetwork.setBlobPath(BLOB_PATH)
+        self._spatialDetectionNetwork.setBlobPath(str(self.config.luxonis_model_path))
         self._spatialDetectionNetwork.setConfidenceThreshold(settings.detection_thresh)
         self._spatialDetectionNetwork.input.setBlocking(False)
         self._spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
@@ -198,7 +198,7 @@ class YoloCamera(BaseCamera):
     def running(self):
         global RUNNING
 
-        return RUNNING and not THREAD_STOP
+        return RUNNING and not THREAD_STOP and self._fresh()
 
     def start(self):
         global THREAD_STOP, RUNNING
@@ -209,6 +209,7 @@ class YoloCamera(BaseCamera):
         self.ready_event.clear()
         self.stopped_event.clear()
         self.error = None
+        self._snapshot = ([], None, None, False)
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -233,15 +234,7 @@ class YoloCamera(BaseCamera):
             if self._thread.is_alive():
                 logger.warning('Camera thread did not stop within five seconds')
 
-    def _callback(self, detections, frame):
+    def _callback(self, detections, frame, captured_at=None):
         if THREAD_STOP:
             return
-        self._detections = detections
-        # An empty batch still proves the pipeline is producing output.
-        self.ready_event.set()
-
-        if self._userCallback != None:
-            self._userCallback(detections, frame)
-
-    def detections(self):
-        return self._detections
+        self._publish(detections, frame, captured_at)

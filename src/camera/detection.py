@@ -10,7 +10,7 @@ class Detection():
     confidence = 0
     fps = 0
 
-    def __init__(self, x, y, z, confidence, fps):
+    def __init__(self, x, y, z, confidence, fps, track_id=None):
         # NOTE: incoming parameters are all m.
 
         self.x = x
@@ -18,3 +18,4 @@ class Detection():
         self.z = z
         self.confidence = confidence
         self.fps = fps
+        self.track_id = track_id

@@ -157,3 +157,10 @@ eeprom.bin
 
 # Depthai-repo
 depthai-python/
+
+# Device-specific YOLO26m model artifacts; regenerated with the prepare script.
+models/*.pt
+models/*.onnx
+models/*.engine
+models/*-fp16.json
+models/.jetson-build-*/

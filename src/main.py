@@ -11,9 +11,10 @@ from dronekit_compat import apply_dronekit_compatibility
 apply_dronekit_compatibility()
 
 from dronekit import connect, Vehicle
-from config import settings, notification_settings
+from config import settings, notification_settings, inference_settings
 from core import Core
-from camera.yolocam import YoloCamera
+from camera.base import BaseCamera
+from camera.factory import create_camera, camera_class
 from filtered_vehicle import FlightControllerVehicle
 from notifications import Notifier
 from log_management import cleanup_unarmed_logs, next_log_path
@@ -30,7 +31,7 @@ PARENT_DIRECTORY = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pa
 
 EXIT: bool         = False
 core: Core         = None
-camera: YoloCamera = None
+camera: BaseCamera = None
 vehicle: Vehicle   = None
 videoWriter        = None
 
@@ -161,6 +162,7 @@ def main(args):
     logger.info('Removed %d previous logs without an arming attempt', removed_logs)
     logger.debug('Flight settings: %s', settings)
     logger.debug('Notification settings: %s', notification_settings)
+    logger.info('Inference configuration: %s', inference_settings)
 
     # messing around with stdout for logging to file
     # this is nasty but whatever
@@ -176,12 +178,12 @@ def main(args):
             videoEnabled = False
         else:
             fileCount = len(os.listdir(args.video_path))
-            videoWriter = cv2.VideoWriter(os.path.join(args.video_path, str(fileCount) + '.mkv'), cv2.VideoWriter_fourcc('M','J','P','G'), 30, YoloCamera.previewSize())
+            videoWriter = cv2.VideoWriter(os.path.join(args.video_path, str(fileCount) + '.mkv'), cv2.VideoWriter_fourcc('M','J','P','G'), 30, camera_class().previewSize())
 
     try:
         if not EXIT:
             logging.info('Starting tracking camera')
-            camera = YoloCamera(camera_callback if videoEnabled else None)
+            camera = create_camera(camera_callback if videoEnabled else None)
             camera.start()
 
             logging.info('Searching for killswitch at: ' + args.killswitch_path)
