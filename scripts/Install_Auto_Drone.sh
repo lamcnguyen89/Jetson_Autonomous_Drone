@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Installation order: resolve account/config -> native/Python dependencies ->
+# validate or prepare YOLO26m -> install device permissions -> enable service.
+# Model preparation runs as SERVICE_USER and completes before service changes;
+# only --start requests an immediate restart. Inference selection stays in .env.
+
 usage() {
     echo "Usage: sudo $0 [--with-sitl] [--start]"
     echo "Install both inference backends, project .venv, permissions and the service."
@@ -104,6 +109,8 @@ fi
 
 cd -- "$project_root"
 run_as_service_user() {
+    # Keep model downloads, Python packages and caches writable by the account
+    # that runs inference. Root is only needed for system-level installation.
     runuser -u "$SERVICE_USER" -- env \
         PIP_CACHE_DIR="$project_root/.cache/pip" \
         PIP_DISABLE_PIP_VERSION_CHECK=1 "$@"
@@ -116,6 +123,8 @@ fi
 
 # Python stays isolated in .venv. APT provides native libraries and build tools
 # for MAVLink/lxml wheels that may need compiling on the target architecture.
+# TensorRT comes from JetPack's APT repository so its native libraries and Python
+# bindings match the platform. Pip supplies model/tracker code inside the venv.
 system_packages=(
     ca-certificates python3 python3-venv python3-dev
     build-essential pkg-config libxml2-dev libxslt1-dev zlib1g-dev
@@ -201,6 +210,8 @@ PY
 run_as_service_user "$venv_python" -m pip check
 # Reuse a validated engine; otherwise download/export/build as the service user.
 # Complete preparation before installing/enabling/restarting the flight service.
+# --if-needed checks checksums, TensorRT version and actual GPU execution, so
+# merely finding a .engine filename never skips a required preparation step.
 run_as_service_user "$venv_python" "$project_root/scripts/prepare_jetson_model.py" --if-needed
 # --help imports the flight application without opening hardware or flying.
 run_as_service_user "$venv_python" "$project_root/src/main.py" --help >/dev/null

@@ -1,3 +1,10 @@
+"""Local WebSocket transport between the simulator and its browser visualiser.
+
+The socket/event loop runs in its own thread. Simulation code queues updates
+and registers a callback for incoming UI controls; the UI does not connect to
+the real camera or the physical MAVLink serial port through this class.
+"""
+
 import asyncio
 import websockets
 import time
@@ -28,6 +35,8 @@ class UIConnection:
         await asyncio.wait([sendTask, receiveTask], return_when=asyncio.FIRST_COMPLETED)
 
     async def sendHandler(self, websocket, _):
+        # Batch queued updates into the newline-delimited format consumed by
+        # the visualiser, independently of Core's control-cycle frequency.
         while True:
             await asyncio.sleep(0.05)
 

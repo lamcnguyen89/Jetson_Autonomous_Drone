@@ -1,4 +1,13 @@
-"""YOLO26m on JetPack TensorRT 10, with explicit CUDA memory and no CPU fallback."""
+"""YOLO26m on JetPack TensorRT 10, with explicit CUDA memory and no CPU fallback.
+
+This module knows about pixels, tensors and GPU execution, not person identity,
+depth or flight commands. Its interface is infer(BGR frame) -> person boxes in
+that frame's pixel coordinates. JetsonCamera adds tracking and 3D measurement.
+
+Calling TensorRT directly allows inference on CUDA while export/tracker tooling
+uses a CPU PyTorch wheel. Engine compilation belongs to the preparation script;
+normal startup only validates, loads and warms up an existing engine.
+"""
 
 import ctypes
 import hashlib
@@ -16,6 +25,7 @@ INPUT_SIZE = 640
 
 
 def load_tensorrt():
+    """Use JetPack's matching native bindings without exposing all system packages."""
     try:
         import tensorrt
         return tensorrt
@@ -40,6 +50,12 @@ def load_tensorrt():
 
 
 def validate_manifest(path):
+    """Check the model/output contract and pair the engine with its build metadata.
+
+    A file's presence is insufficient: it could be from a different model or a
+    partial copy. Checksums detect mismatched artifacts; deserialization and
+    warmup separately establish runtime/GPU compatibility.
+    """
     if not path.is_file() or not path.with_suffix('.json').is_file():
         raise FileNotFoundError('Missing YOLO26m engine or manifest; run scripts/prepare_jetson_model.py')
     manifest = json.loads(path.with_suffix('.json').read_text())
@@ -58,6 +74,7 @@ def preprocess(frame):
     """BGR -> letterboxed, normalized RGB NCHW, retaining exact inverse geometry."""
     height, width = frame.shape[:2]
     scale = min(INPUT_SIZE / width, INPUT_SIZE / height)
+    # Preserve aspect ratio with padding so people are not stretched to a square.
     resized_width, resized_height = round(width * scale), round(height * scale)
     left = (INPUT_SIZE - resized_width) // 2
     top = (INPUT_SIZE - resized_height) // 2
@@ -65,6 +82,8 @@ def preprocess(frame):
     image[top:top + resized_height, left:left + resized_width] = cv2.resize(
         frame, (resized_width, resized_height))
     tensor = np.ascontiguousarray(image[:, :, ::-1].transpose(2, 0, 1)[None], dtype=np.float32)
+    # OpenCV uses BGR/HWC; the exported model expects RGB with dimensions
+    # [batch, channels, height, width] and values between zero and one.
     tensor /= 255.0
     return tensor, (resized_width / width, resized_height / height, left, top)
 
@@ -72,9 +91,14 @@ def preprocess(frame):
 def decode(output, frame_shape, transform, threshold=0.1):
     """Decode the end-to-end head, returning person xyxy/conf/class in image pixels."""
     rows = np.asarray(output).reshape(-1, 6)
+    # The prepared end-to-end head already outputs [x1,y1,x2,y2,score,class].
+    # COCO class 0 is person. Keep low scores here for tracker association;
+    # JetsonCamera applies the stronger flight-facing confidence threshold.
     valid = np.isfinite(rows).all(axis=1) & (rows[:, 4] >= threshold) & (rows[:, 5] == 0)
     rows = rows[valid].astype(np.float32, copy=True)
     sx, sy, left, top = transform
+    # Undo exactly the padding and rounded resize used above. Depth projection
+    # later samples the original image, so model-space boxes cannot be used as-is.
     rows[:, [0, 2]] = (rows[:, [0, 2]] - left) / sx
     rows[:, [1, 3]] = (rows[:, [1, 3]] - top) / sy
     rows[:, [0, 2]] = rows[:, [0, 2]].clip(0, frame_shape[1])
@@ -83,6 +107,11 @@ def decode(output, frame_shape, transform, threshold=0.1):
 
 
 class CudaRuntime:
+    """Small CUDA runtime binding for the memory/stream operations we need.
+
+    Explicit ctypes signatures preserve pointer widths on this 64-bit platform.
+    All nonzero CUDA results become worker errors rather than stale outputs.
+    """
     def __init__(self):
         self.lib = ctypes.CDLL('libcudart.so.12')
         pointer = ctypes.c_void_p
@@ -107,6 +136,11 @@ class CudaRuntime:
 
 
 class TensorRTYolo:
+    """Own one engine, execution context, CUDA stream and reusable I/O buffers.
+
+    One perception worker calls infer() sequentially. This instance and its
+    buffers are not designed for concurrent inference from multiple threads.
+    """
     def __init__(self, path):
         path = Path(path)
         self.manifest = validate_manifest(path)
@@ -136,6 +170,8 @@ class TensorRTYolo:
             if tuple(self.engine.get_tensor_shape(self.output_name)) != (1, 300, 6):
                 raise ValueError('Expected YOLO26m end-to-end output (1, 300, 6)')
             self.buffers = {}
+            # Static batch-one shapes let us allocate once and reuse memory for
+            # every frame, keeping per-frame allocation overhead predictable.
             self.cuda.call('cudaStreamCreate', ctypes.byref(self.stream))
             for name in names:
                 dtype = np.dtype(self.trt.nptype(self.engine.get_tensor_dtype(name)))
@@ -158,20 +194,25 @@ class TensorRTYolo:
                     self.trt.__version__)
 
     def infer(self, frame):
+        """Execute one frame and return decoded boxes only after GPU work completes."""
         tensor, transform = preprocess(frame)
         host_input, device_input = self.buffers[self.input_name]
         host_output, device_output = self.buffers[self.output_name]
         np.copyto(host_input, tensor, casting='unsafe')
+        # Copy input -> execute -> copy output on the same stream, preserving
+        # order. CUDA copy kinds 1 and 2 mean host-to-device and device-to-host.
         self.cuda.call('cudaMemcpyAsync', device_input, ctypes.c_void_p(host_input.ctypes.data),
                        host_input.nbytes, 1, self.stream)
         if not self.context.execute_async_v3(self.stream.value):
             raise RuntimeError('TensorRT GPU execution failed')
         self.cuda.call('cudaMemcpyAsync', ctypes.c_void_p(host_output.ctypes.data), device_output,
                        host_output.nbytes, 2, self.stream)
+        # NumPy must not inspect the output until the asynchronous copy finishes.
         self.cuda.call('cudaStreamSynchronize', self.stream)
         return decode(host_output, frame.shape, transform)
 
     def close(self):
+        # Finish outstanding work before releasing the context, buffers or stream.
         if self.stream.value:
             self.cuda.call('cudaStreamSynchronize', self.stream)
         self.context = None

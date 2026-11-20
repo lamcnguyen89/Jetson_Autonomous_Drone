@@ -1,3 +1,11 @@
+"""Assemble the real controller around a virtual autopilot and synthetic camera.
+
+ArduPilot SITL replaces the physical flight controller, while MockCamera turns
+a supplied person's geographic position into camera-like detections. Core and
+its movement rules are reused. This exercises flight behavior, not YOLO/TensorRT
+accuracy or real RGB/depth synchronization; those need separate perception tests.
+"""
+
 import time
 import threading
 import json
@@ -21,6 +29,8 @@ def core_thread(core):
     print('stopped core thread')
 
 def ui_thread(ui: UIConnection, core: Core, vehicle: Vehicle, camera: MockCamera):
+    # Publish a slower UI view independently of the control loop so rendering
+    # cadence does not determine how often the simulated vehicle is commanded.
     print('running ui thread...')
 
     # On startup, send reset message
@@ -81,6 +91,8 @@ def prepareForTest(timeout = True, verbose=False) -> Tuple[Core, Vehicle, MockCa
 
     print('start fixture')
 
+    # Use an executable for this host's CPU architecture, with simulation assets
+    # resolved relative to the package rather than the shell's working directory.
     sitl = SITL(path=sitl_binary_path(), defaults_filepath=str(DEFAULTS_FILE))
     sitl_args = ['--model', 'hexa']
     sitl.launch(sitl_args, await_ready=True, restart=False, verbose=verbose)

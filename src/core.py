@@ -1,3 +1,12 @@
+"""Flight state machine and priority-based movement selection.
+
+Two decisions are separate: ExecutionState decides when autonomous flight may
+progress, and the ordered rules decide how to move while tracking is active.
+Camera backends supply measured positions through BaseCamera, while commands.py
+turns the chosen position errors into MAVLink commands. No model API is needed
+here, so the same controller also runs against the simulated camera.
+"""
+
 import time
 import logging
 
@@ -17,6 +26,7 @@ from rules.backoff import BackoffRule
 logger = logging.getLogger(__name__)
 
 class ExecutionState(str, Enum):
+    """Lifecycle states; these are independent of backoff/follow/search rule names."""
     Init           = "INIT"
     AwaitingArm    = "AWAITING_ARM"
     Takeoff        = "TAKEOFF"
@@ -41,12 +51,14 @@ class Core:
         self._notification_error_logged = False
         self.activeRule = 'n/a'
 
-        # Setup vehicle etc
+        # DroneKit delivers these callbacks from its I/O processing. They can
+        # change state while the control worker is sleeping or awaiting takeoff.
         self.vehicle.add_attribute_listener('mode', self.modeCallback)
         self.vehicle.add_attribute_listener('armed', self.armedCallback)
         self.vehicle.add_attribute_listener('last_heartbeat', self.lastHeartbeatCallback)
 
-        # Setup rules in heirarchy order
+        # Subsumption priority: the first active rule wins. Backoff overrides
+        # following, a remembered target enables search, and 'none' is fallback.
         self.rules = [
             BackoffRule(self.vehicle, self.camera),
             FollowRule(self.vehicle, self.camera),
@@ -72,8 +84,8 @@ class Core:
             self._set_state(ExecutionState.PilotOnly, 'vehicle left GUIDED mode')
         elif self.vehicle.mode.name == "GUIDED":
             if self.isReady() and self.isConnected():
-                # Go into loiter mode because this is totally undefined now
-                # The pilot needs to set the vehicle down and then switch back into GUIDED
+                # An already airborne/ready vehicle must not re-enter the takeoff
+                # sequence on this callback; request the existing guided hold.
                 logger.warning('Cannot restart core flow due to being airborne; commanding guided hold')
                 setPositionTarget(self.vehicle, (0,0), 0)
                 return
@@ -133,9 +145,13 @@ class Core:
             self.activeRule = 'perception_hold'
             return ((0.0, 0.0), 0.0)
         previous_rule = self.activeRule
+        # Update every rule's observation history, including rules suppressed by
+        # a higher-priority one. Search needs the last seen direction for later.
         for rule in self.rules:
             rule.update()
 
+        # Rule output is ((forward_error_m, right_error_m), yaw_rate_deg_per_sec).
+        # commands.py owns velocity gains, limits and MAVLink coordinate frames.
         state = ((0.0, 0.0), 0.0)
         for rule in self.rules:
             if rule.isActive():
@@ -228,7 +244,8 @@ class Core:
             elif self.state is ExecutionState.Running:
                 # Mode and armed callbacks handle exiting this state.
 
-                # Apply local translation and yaw differential
+                # This loop can run faster than inference. Reuse a still-current
+                # batch, with _rule_command guarding stale data and lost targets.
                 position, yaw = self._rule_command()
                 setPositionTarget(self.vehicle, position, yaw)
 
@@ -244,11 +261,11 @@ class Core:
                 time.sleep(1)
                 pass
 
-        # At this point, we are no longer running. Attempt to land if in-flight, else we
-        # leave the platform in a dangerous state.
+        # Shutdown requests RTL only if the readiness, connection and altitude
+        # conditions below pass; it is not an unconditional landing command.
 
         if self.isReady() and self.isConnected() and self.isAltitudeOk():
-            # Land now!
+            # RTL delegates return/landing behavior to the flight controller.
             logger.warning('Core stopped while airborne; requesting RTL and waiting for landing')
             self.vehicle.mode = VehicleMode('RTL')
             self.vehicle.wait_for_alt(0)

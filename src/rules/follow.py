@@ -18,6 +18,8 @@ class FollowRule(BaseRule):
         xDistance = detection.x
         zDistance = detection.z
 
+        # Positive camera X means the person is right of center. Turn toward
+        # that side with a quadratic response near center and a configured cap.
         invertYaw = xDistance < 0
 
         yawRate = (math.pow(xDistance, 2) / 4.0) * settings.yaw_rate * (-1 if invertYaw else 1)
@@ -26,10 +28,14 @@ class FollowRule(BaseRule):
         if yawRate > settings.yaw_rate:
             yawRate = settings.yaw_rate
 
+        # Follow the desired separation, not the person's entire forward depth.
+        # commands.py later converts these meter errors to bounded velocities.
         self._targetPosition = (zDistance - settings.minimum_distance, xDistance)
         self._targetYaw = yawRate
 
     def headingChange(self, xDistance, zDistance):
+        # Geometry helper retained for callers; update() above uses the bounded
+        # quadratic yaw response rather than this angle calculation.
         # Safeguard against weirdness in detection data
         if zDistance == 0: return 0
 

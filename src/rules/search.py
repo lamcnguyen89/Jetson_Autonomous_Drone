@@ -16,6 +16,8 @@ class SearchRule(BaseRule):
     personDirection = Direction.NONE
 
     def isActive(self):
+        # A target must have been observed before search may rotate the vehicle.
+        # Fresh detections activate higher-priority rules in Core instead.
         return self.hasSeenPerson
 
     def update(self):
@@ -31,7 +33,8 @@ class SearchRule(BaseRule):
 
             self.hasSeenPerson = True
 
-        # Yaw in that saved direction
+        # With no current target, keep the last seen direction. Core separately
+        # suppresses this yaw for stale perception or a temporary target lock.
         if self.personDirection is Direction.NONE:
             self._targetYaw = 0.0
         else:

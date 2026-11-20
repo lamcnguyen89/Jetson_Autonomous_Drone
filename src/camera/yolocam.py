@@ -1,3 +1,11 @@
+"""Luxonis adapter: TinyYOLO v4 inference and spatial measurement run on the OAK.
+
+The host builds a DepthAI graph, deploys it with dai.Device, then consumes
+spatial detections from USB queues. Host OpenCV handles optional overlays/video;
+it does not run the neural network. The shared PerceptionCamera layer supplies
+the same freshness and position API used by the Jetson backend.
+"""
+
 from .detection import Detection
 from .runtime import PerceptionCamera, capture_time
 
@@ -11,7 +19,10 @@ import logging
 
 from config import settings, inference_settings
 
+# Legacy lifecycle flags assume a single Luxonis camera worker per process.
+# Factory selection ensures the service creates only one active camera backend.
 THREAD_STOP = False
+# Retained default path; setup() uses config.luxonis_model_path for selection.
 BLOB_PATH   = str((Path(__file__).parent / Path('../../models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
 RUNNING     = False
 logger = logging.getLogger(__name__)
@@ -33,7 +44,8 @@ def thread(callback, _pipeline, outputFrames):
     with dai.Device(_pipeline) as device:
         logger.info('Inference ready: backend=Luxonis model=TinyYOLOv4 device=OAK-VPU USB=%s',
                     device.getUsbSpeed())
-        # Output queues will be used to get the rgb frames and nn data from the outputs defined above
+        # 'detections' already contains labels and millimeter spatial coordinates
+        # computed on the OAK. No host inference/device selection happens here.
         previewQueue = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
         detectionNNQueue = device.getOutputQueue(name="detections", maxSize=4, blocking=False)
 
@@ -79,11 +91,14 @@ def thread(callback, _pipeline, outputFrames):
 
             personDetections = []
             for detection in detections:
+                # The shipped COCO model uses class 0 for people.
                 if detection.label == 0:
                     # Ignore detections with depth closer than the minimum the camera supports
                     if (detection.spatialCoordinates.z / 1000.0) <= 0.5:
                         continue
 
+                    # Normalize device millimeters to the meter contract used by
+                    # the movement rules and the Jetson spatial adapter.
                     personDetections.append(Detection(detection.spatialCoordinates.x / 1000.0, detection.spatialCoordinates.y / 1000.0, detection.spatialCoordinates.z / 1000.0, detection.confidence, fps))
 
                     if outputFrames:
@@ -125,6 +140,7 @@ def thread(callback, _pipeline, outputFrames):
         print('Camera has stopped')
 
 class YoloCamera(PerceptionCamera):
+    """Lifecycle wrapper for the OAK graph; default selection remains nearest Z."""
 
     _thread = None
     _detections = []
@@ -141,7 +157,7 @@ class YoloCamera(PerceptionCamera):
         self._userCallback = callback
 
     def setup(self):
-        # Create pipeline
+        # Defining nodes describes device work; dai.Device in the worker starts it.
         self._pipeline = dai.Pipeline()
 
         # Define sources and outputs
@@ -172,6 +188,8 @@ class YoloCamera(PerceptionCamera):
         self._stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
         self._spatialDetectionNetwork.setBlobPath(str(self.config.luxonis_model_path))
+        # The blob is compiled for the OAK VPU. Jetson mode loads its separate
+        # TensorRT engine instead; the two artifacts are not interchangeable.
         self._spatialDetectionNetwork.setConfidenceThreshold(settings.detection_thresh)
         self._spatialDetectionNetwork.input.setBlocking(False)
         self._spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
@@ -190,6 +208,8 @@ class YoloCamera(PerceptionCamera):
         self._monoRight.out.link(self._stereo.right)
 
         self._camRgb.preview.link(self._spatialDetectionNetwork.input)
+        # Passthrough originates from frames consumed by the network; its
+        # output and detections are sent back through separate host queues.
         self._spatialDetectionNetwork.passthrough.link(self._xoutRgb.input)
         self._spatialDetectionNetwork.out.link(self._xoutNN.input)
 

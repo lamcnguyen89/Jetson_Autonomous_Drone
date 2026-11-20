@@ -21,6 +21,8 @@ def main():
     core, vehicle, camera, sitl, ui = prepareForTest(timeout=False, verbose=args.verbose)
 
     def uicallback(data):
+        # Map interaction changes only the synthetic person's location. Normal
+        # Core rules decide how the virtual aircraft responds to that detection.
         if data['type'] == 'control':
             camera.setGlobalCoordinate(data['latitude'], data['longitude'])
 

@@ -3,11 +3,15 @@ Description=Autodrone follow-me startup script
 After=network.target
 
 [Service]
+# The installer renders these placeholders. One service account and project
+# environment are shared by both inference backends; selection comes from .env.
 Type=simple
 User=@SERVICE_USER@
 SupplementaryGroups=dialout
 EnvironmentFile=@PROJECT_ROOT@/.env
 WorkingDirectory=@PROJECT_ROOT@
+# -u sends Python output promptly to the journal. The service loads prepared
+# models; downloading/exporting/building belongs to the installer.
 ExecStart=/usr/bin/env .venv/bin/python -u src/main.py --uri "${MAVLINK_PORT}" --video
 Restart=always
 RestartSec=5

@@ -4,6 +4,11 @@ from config import inference_settings
 
 
 def camera_class(config=inference_settings):
+    """Choose once at startup; also expose the class for video frame dimensions.
+
+    Local imports keep GPU/tracker dependencies out of Luxonis startup. Camera
+    pipelines differ between modes, so a backend change requires a restart.
+    """
     if config.backend == 'luxonis':
         from .yolocam import YoloCamera
         return YoloCamera
@@ -14,4 +19,5 @@ def camera_class(config=inference_settings):
 
 
 def create_camera(callback=None, config=inference_settings):
+    # Construction selects the adapter; start() owns the worker/hardware lifecycle.
     return camera_class(config)(callback, config=config)

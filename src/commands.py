@@ -1,3 +1,11 @@
+"""Translate rule outputs into flight-controller setpoints.
+
+Rules express forward/right position errors in meters and yaw rates in degrees
+per second. Moving commands use bounded proportional velocities in the vehicle
+body frame; the zero-error branch holds a captured geographic position instead.
+Altitude is relative to home and is controlled separately from camera-space Y.
+"""
+
 from typing import Tuple
 from pymavlink import mavutil
 from dronekit import Vehicle
@@ -6,6 +14,8 @@ from config import settings
 import math
 
 IS_LOITER = False
+# Cache the geographic point when entering hold. Reusing it prevents repeated
+# commands from moving the hold point along with any aircraft drift.
 LOITER_POSITION = {
     "latitude": 0,
     "longitude": 0
@@ -75,6 +85,7 @@ This target position function was created in order to deal with the issue that w
 """
 
 def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: float) -> None:
+    """Send body-frame velocity when moving, or geographic hold at zero XY error."""
     global IS_LOITER
 
     forwardError, rightError = position
@@ -84,6 +95,8 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
         setLoiterGuided(vehicle, yawRate)
     else:
         IS_LOITER = False
+        # Moving again ends the current hold episode; the next hold captures a
+        # new point. This module assumes a single active vehicle/controller.
 
         forwardVelocity, rightVelocity = positionErrorToHorizontalVelocity(
             forwardError,
@@ -113,6 +126,7 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
 
 
 def setLoiterGuided(vehicle: Vehicle, yawRate: float) -> None:
+    """Hold the saved latitude/longitude at configured altitude, allowing search yaw."""
     global IS_LOITER
     global LOITER_POSITION
 
@@ -135,9 +149,9 @@ def setLoiterGuided(vehicle: Vehicle, yawRate: float) -> None:
         0,       # time_boot_ms (not used)
         0, 0,    # target system, target component
         mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT, # frame
-        emptyMask + ignoreAccelMask + ignoreVelocityMask + ignoreYaw, # type_mask (only speeds enabled)
-        int(LOITER_POSITION["latitude"] * 1e7), # lat_int - X Position in WGS84 frame in 1e7 * meters
-        int(LOITER_POSITION["longitude"] * 1e7), # lon_int - Y Position in WGS84 frame in 1e7 * meters
+        emptyMask + ignoreAccelMask + ignoreVelocityMask + ignoreYaw, # position and yaw rate enabled
+        int(LOITER_POSITION["latitude"] * 1e7), # WGS84 latitude in degrees scaled by 1e7
+        int(LOITER_POSITION["longitude"] * 1e7), # WGS84 longitude in degrees scaled by 1e7
         settings.altitude,
         0, # X velocity in NED frame in m/s
         0, # Y velocity in NED frame in m/s
@@ -148,6 +162,8 @@ def setLoiterGuided(vehicle: Vehicle, yawRate: float) -> None:
     vehicle.send_mavlink(msg)
 
 
+# Historical explanation and inactive implementation below. Python treats this
+# quoted block as text; the active setPositionTarget implementation is above.
 """
 # The original setPositionTarget function was commented out because it was not working as intended. The new implementation below uses a proportional controller to convert position offsets into velocity commands, which should provide smoother and more responsive control.
 

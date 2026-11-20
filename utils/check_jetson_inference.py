@@ -33,10 +33,15 @@ def main():
         durations = []
         inference_times, tracker_times = [], []
         tracks = []
+        # Detector construction already warmed the GPU. Repeating one image
+        # isolates compute/association timing; it does not test moving-scene
+        # identity retention, sensor transfer, depth projection or flight latency.
         for _ in range(args.iterations):
             start = time.perf_counter()
             rows = detector.infer(frame)
             inferred_at = time.perf_counter()
+            # Detector timing includes preprocessing, GPU execution and decoding;
+            # tracker timing includes Boxes adaptation and BoT-SORT association.
             tracks = tracker.update(Boxes(rows, frame.shape[:2]), frame)
             finished_at = time.perf_counter()
             durations.append((finished_at - start) * 1000)

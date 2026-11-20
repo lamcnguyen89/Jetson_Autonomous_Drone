@@ -1,3 +1,11 @@
+"""Synthetic perception for flight-behavior tests, independent of inference hardware.
+
+A virtual person's GPS position is compared with the vehicle's position/yaw.
+Field-of-view and distance limits decide whether Core sees a Detection. The
+result uses the same camera-space X/Z meter convention as the real adapters,
+but contains no image-derived depth, detector noise or actual neural inference.
+"""
+
 from camera.base import BaseCamera
 from camera.detection import Detection
 from .constants import MOCK_FOV, RADIUS_OF_EARTH, MOCK_Z_MAX, MOCK_FPS
@@ -79,6 +87,8 @@ class MockCamera(BaseCamera):
         self.vehicle = vehicle
 
     def running(self):
+        # This mock represents an always-available sensor; real camera workers
+        # additionally check errors, shutdown and measurement freshness.
         return True
 
     def playbackGPXFromFile(self, filepath):
@@ -132,7 +142,8 @@ class MockCamera(BaseCamera):
             # print('DEBUG :: Beyond max distance, no detections')
             return
 
-        # Compute X and Z (Y is always 0)
+        # Resolve geographic range into camera-right X and camera-forward Z.
+        # The 2D simulation fixes Y at zero; this is not an altitude measurement.
         xDistance = math.sin(math.radians(angle)) * distance
         zDistance = math.cos(math.radians(angle)) * distance
 

@@ -2,6 +2,11 @@
 """Export official YOLO26m and build an FP16 engine on the target Jetson.
 
 No camera, flight-controller connection, service changes or flight commands.
+
+Artifact chain: pretrained yolo26m.pt -> portable ONNX graph -> GPU-specific
+TensorRT engine plus checksum manifest. The installer calls --if-needed so
+repeat installs validate/reuse an engine instead of repeating the long build.
+The flight service never downloads weights or compiles its model at startup.
 """
 
 import argparse
@@ -25,6 +30,8 @@ def reuse_prepared_engine(output, runtime_version):
         manifest = validate_manifest(output)
         if manifest.get('tensorrt_version') != runtime_version:
             raise ValueError('TensorRT version changed since the engine was built')
+        # Construction includes GPU warmup. A valid checksum alone cannot tell
+        # us whether a copied engine can execute on this Jetson/runtime.
         detector = TensorRTYolo(output)
         detector.close()
     except (OSError, ValueError, RuntimeError) as error:
@@ -62,10 +69,15 @@ def main(argv=None):
         import torch
         from ultralytics import YOLO
         torch.set_num_threads(2)
+        # Ultralytics downloads the official checkpoint when missing, or loads
+        # the existing local weights. This is pretrained inference, not training.
         model = YOLO(str(output.parent / 'yolo26m.pt'))
         config = model.model.yaml
         if config.get('scale') != 'm' or 'yolo26' not in str(config.get('yaml_file', '')).lower():
             raise ValueError('Expected the official YOLO26m detection model')
+        # Match the runtime decoder's fixed contract: batch one, 640-square,
+        # end-to-end xyxy/score/class output. CPU export avoids requiring a CUDA
+        # PyTorch wheel; TensorRT supplies the actual GPU inference runtime.
         onnx_path = Path(model.export(format='onnx', device='cpu', imgsz=INPUT_SIZE,
                                      batch=1, dynamic=False, simplify=False, opset=17, nms=False))
         del model
@@ -84,7 +96,11 @@ def main(argv=None):
     if input_shape != [1, 3, INPUT_SIZE, INPUT_SIZE] or output_shape != [1, 300, 6]:
         raise ValueError(f'Expected static YOLO26m end-to-end shapes, got {input_shape} / {output_shape}')
     with tempfile.TemporaryDirectory(prefix='.jetson-build-', dir=output.parent) as temporary:
+        # Build beside the destination so os.replace can publish each artifact
+        # on the same filesystem. A failed build leaves the previous pair intact.
         engine = Path(temporary) / output.name
+        # FP16 enables TensorRT's reduced-precision GPU kernels. The engine's I/O
+        # may still be FP32; the runtime queries tensor dtypes instead of guessing.
         subprocess.run([str(args.trtexec), f'--onnx={onnx_path}', '--fp16',
                         f'--saveEngine={engine}', '--skipInference', '--memPoolSize=workspace:2048'],
                        check=True)
@@ -98,6 +114,8 @@ def main(argv=None):
         # Prove the generated engine loads and executes on GPU before installing it.
         detector = TensorRTYolo(engine)
         detector.close()
+        # The engine and manifest are replaced separately. Runtime checksum
+        # validation rejects a mismatched pair if a reader catches that window.
         os.replace(engine, output)
         os.replace(engine.with_suffix('.json'), output.with_suffix('.json'))
     print(f'YOLO26m TensorRT GPU engine ready: {output}')

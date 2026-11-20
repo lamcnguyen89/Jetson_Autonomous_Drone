@@ -17,6 +17,8 @@ def literal(value):
 
 def build_rule(device, properties):
     """Match a USB controller's identity or an onboard UART's fixed name."""
+    # Scope permissions to the configured controller instead of granting the
+    # service account access to every USB serial device connected to the host.
     if properties.get("SUBSYSTEM") != "tty":
         raise ValueError(f"{device} is not a tty serial device")
 

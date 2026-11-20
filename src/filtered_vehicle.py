@@ -1,3 +1,11 @@
+"""Keep a shared MAVLink network's heartbeats from confusing flight readiness.
+
+Herelink/GCS components can share the link with the autopilot. Accepting every
+heartbeat would let another component influence DroneKit's mode, armed state
+or connection age. This adapter pins heartbeat dispatch to the first matching
+ArduPilot controller while retaining normal handling of other message types.
+"""
+
 import logging
 
 from dronekit import Vehicle
@@ -71,6 +79,8 @@ class FlightControllerVehicle(Vehicle):
                     name, source_system, source_component, details)
 
     def notify_message_listeners(self, name, msg):
+        # The filter runs before DroneKit updates its attributes/listeners.
+        # Filtering only log output would leave the controller state confused.
         if name == "HEARTBEAT":
             source_system = msg.get_srcSystem()
             source_component = msg.get_srcComponent()
@@ -130,5 +140,6 @@ class FlightControllerVehicle(Vehicle):
         self._log_controller_message(name, msg)
         # DroneKit's autopilot logger records incoming STATUSTEXT at its MAVLink
         # severity. Keep normal dispatch so these and other listeners still run.
-        # Only accepted messages reach DroneKit's normal handlers.
+        # This heartbeat policy does not filter every other telemetry type;
+        # _log_controller_message independently limits which sources it logs.
         super().notify_message_listeners(name, msg)

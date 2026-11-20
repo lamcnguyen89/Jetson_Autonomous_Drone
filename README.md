@@ -1,6 +1,38 @@
 # Jetson_Aurelia_Herelink_Autonomous_Drone
 Code for Autonomous Drone using Jetson Orin Nano, the Herelink Video/RC System, and Luxonis Depth Camera
 
+## Reading the code
+
+The flight service separates sensor processing from flight decisions. Both real
+camera backends publish the same meter-based person positions, so the controller
+does not depend on a particular model or inference processor. Read the following
+files in order for the main architecture; module docstrings and local comments
+explain the less obvious choices at each step.
+
+| Start here | Responsibility and connection to the next layer |
+| --- | --- |
+| [src/main.py](src/main.py) | Assembles the service, waits for readiness, and starts camera/control workers. |
+| [src/config.py](src/config.py) | Reads `.env` into immutable settings, including backend selection. |
+| [src/camera/factory.py](src/camera/factory.py) | Chooses the camera adapter at startup. |
+| [src/camera/runtime.py](src/camera/runtime.py) | Publishes batches and enforces capture-age freshness for both real backends. |
+| [src/core.py](src/core.py) and [src/rules/base.py](src/rules/base.py) | Separate flight lifecycle from priority-ordered backoff/follow/search/hold decisions. |
+| [src/commands.py](src/commands.py) | Converts meter errors and yaw rates into bounded velocities or geographic hold commands. |
+| [src/filtered_vehicle.py](src/filtered_vehicle.py) and [src/notifications.py](src/notifications.py) | Handle autopilot heartbeat selection and operator feedback on the shared MAVLink link. |
+
+For the inference details, follow either
+[yolocam.py](src/camera/yolocam.py), where the OAK performs detection and spatial
+measurement, or [jetson.py](src/camera/jetson.py), where synchronized OAK RGB/depth
+feeds the Jetson pipeline. The latter delegates pixel/tensor/GPU work to
+[tensorrt_yolo.py](src/camera/tensorrt_yolo.py), pixel-to-meter projection to
+[spatial.py](src/camera/spatial.py), and person selection to `TargetLock`.
+
+Installation is a separate lifecycle: [Install_Auto_Drone.sh](scripts/Install_Auto_Drone.sh)
+installs dependencies and invokes [prepare_jetson_model.py](scripts/prepare_jetson_model.py)
+to reuse or compile an engine before enabling the service. Model building is not
+part of the flight worker. [simulation/environment.py](simulation/environment.py)
+reuses Core with a virtual autopilot and synthetic detections; it tests movement
+behavior independently of the real inference and depth pipelines.
+
 ## Installation and systemd startup
 
 The installer targets a Jetson with Ubuntu/Debian, systemd, and JetPack's

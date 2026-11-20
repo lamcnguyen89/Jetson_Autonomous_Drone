@@ -1,4 +1,10 @@
-"""OAK RGB/depth acquisition, YOLO26m GPU detection and BoT-SORT target tracking."""
+"""OAK RGB/depth acquisition, YOLO26m GPU detection and BoT-SORT target tracking.
+
+Data path: synchronized OAK images -> TensorRT boxes -> BoT-SORT IDs -> calibrated
+3D positions -> TargetLock -> PerceptionCamera snapshot -> Core's flight rules.
+The OAK still measures depth in this mode; only neural inference moves to the
+Jetson. The worker owns camera and GPU resources so Core never runs inference.
+"""
 
 from datetime import timedelta
 import logging
@@ -20,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_pipeline():
+    """Configure sensor/depth processing on the OAK, with no OAK neural network."""
     pipeline = dai.Pipeline()
     rgb = pipeline.create(dai.node.ColorCamera)
     rgb.setBoardSocket(dai.CameraBoardSocket.CAM_A)
@@ -30,6 +37,8 @@ def create_pipeline():
     stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
     stereo.setLeftRightCheck(True)
     stereo.setSubpixel(True)
+    # Project stereo depth into the RGB camera's viewpoint. Matching resolutions
+    # without this alignment would sample depth at the wrong detected object.
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
     stereo.setOutputSize(640, 360)
     for socket, destination in ((dai.CameraBoardSocket.CAM_B, stereo.left),
@@ -40,6 +49,9 @@ def create_pipeline():
         mono.setFps(30)
         mono.out.link(destination)
     sync = pipeline.create(dai.node.Sync)
+    # Pair by capture time before USB transfer, so a moving person is not given
+    # a distance measured from an unrelated frame. At 30 FPS, 15 ms is under a
+    # frame period; waiting for a match is preferable to emitting a wrong pair.
     sync.setSyncThreshold(timedelta(milliseconds=15))
     sync.setSyncAttempts(-1)  # Never emit an unsynchronized pair.
     rgb.isp.link(sync.inputs['rgb'])
@@ -47,13 +59,20 @@ def create_pipeline():
     output = pipeline.create(dai.node.XLinkOut)
     output.setStreamName('frames')
     output.input.setBlocking(False)
+    # Prefer current measurements over a backlog when inference is slower than
+    # capture. The host queue below also holds only the latest transferred group.
     output.input.setQueueSize(1)
     sync.out.link(output.input)
     return pipeline
 
 
 class TargetLock:
-    """Keep the selected ID through short occlusions; use only measured positions."""
+    """Separate 'which person to follow' from the tracker's association algorithm.
+
+    Choose nearest depth initially, then retain that ID even if someone else
+    comes closer. A brief absence requests hold; timeout permits a new target.
+    No predicted position is sent to flight control while the target is absent.
+    """
     def __init__(self, timeout):
         self.timeout = timeout
         self.track_id = None
@@ -67,6 +86,7 @@ class TargetLock:
                 self.last_seen, self.waiting = now, False
                 return match
             if now - self.last_seen < self.timeout:
+                # Remember the ID while withholding movement toward an estimate.
                 self.waiting = True
                 return None
             logger.info('Target lost: track_id=%s', self.track_id)
@@ -83,15 +103,19 @@ class TargetLock:
 def create_tracker():
     # Imports stay optional for Luxonis mode. BoT-SORT runs on CPU; inference
     # uses TensorRT CUDA directly and does not require a CUDA PyTorch wheel.
+    # Dependency installation belongs to the installer, never the flight worker.
     os.environ['YOLO_AUTOINSTALL'] = 'false'
     from ultralytics.trackers.bot_sort import BOTSORT
     from ultralytics.utils import YAML, IterableSimpleNamespace
     config = YAML.load(Path(__file__).with_name('botsort.yaml'))
+    # A new identity needs flight-quality evidence. Lower-score detections may
+    # still associate with an existing track in BoT-SORT's matching stages.
     config['new_track_thresh'] = max(config['track_high_thresh'], settings.detection_thresh)
     return BOTSORT(IterableSimpleNamespace(**config))
 
 
 class JetsonCamera(PerceptionCamera):
+    """Adapt the GPU pipeline to the same lifecycle/position API as YoloCamera."""
     @staticmethod
     def previewSize():
         return (640, 360)
@@ -118,6 +142,7 @@ class JetsonCamera(PerceptionCamera):
         return not self._stop.is_set() and self._fresh()
 
     def closestDetection(self):
+        # Preserve the legacy method name while returning the locked target.
         snapshot = self._snapshot
         return snapshot[2] if not self._stop.is_set() and self._fresh(snapshot) else None
 
@@ -133,10 +158,13 @@ class JetsonCamera(PerceptionCamera):
                 logger.warning('Jetson camera thread did not stop within five seconds')
 
     def _run(self):
+        """Own inference, acquisition, publication and cleanup on one worker thread."""
         detector = None
         try:
             from .tensorrt_yolo import TensorRTYolo
             detector = TensorRTYolo(self.config.jetson_model_path)
+            # Loading and GPU warmup happen before the OAK is claimed. A missing
+            # or incompatible engine fails startup instead of changing backend.
             tracker = create_tracker()
             from ultralytics.engine.results import Boxes
             if self._stop.is_set():
@@ -157,6 +185,8 @@ class JetsonCamera(PerceptionCamera):
                         self._stop.wait(0.005)
                         continue
                     captured_at = min(capture_time(group['rgb'], dai), capture_time(group['depth'], dai))
+                    # The older member sets the pair's age. Discard duplicates
+                    # and old groups before spending GPU time on them.
                     if last_capture is not None and captured_at <= last_capture:
                         continue
                     if time.monotonic() - captured_at > self.config.max_age:
@@ -166,6 +196,8 @@ class JetsonCamera(PerceptionCamera):
                     if frame.shape[:2] != depth.shape or frame.shape[:2] != (360, 640):
                         raise ValueError('RGB and aligned depth dimensions do not match')
                     if last_capture is not None and captured_at - last_capture > self.config.target_lost_timeout:
+                        # A long gap invalidates motion history. Reset the target
+                        # too, since reset() can reuse numeric tracker IDs.
                         tracker.reset()
                         self._target = TargetLock(self.config.target_lost_timeout)
                     rows = detector.infer(frame)
@@ -176,6 +208,7 @@ class JetsonCamera(PerceptionCamera):
                     last_capture = captured_at
                     detections = []
                     for track in tracks:
+                        # BoT-SORT rows: x1,y1,x2,y2, ID, score, class, source index.
                         # Use this frame's measured detector box for depth, rather
                         # than the Kalman-smoothed box returned by the tracker.
                         box = rows[int(track[7]), :4]
@@ -193,6 +226,8 @@ class JetsonCamera(PerceptionCamera):
                             cv2.putText(frame, f'ID {track_id} {position[2]:.2f}m', (x1, max(12, y1)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
                     selected = self._target.update(detections, captured_at)
+                    # Publish after depth validation and selection; the common
+                    # layer checks age again to include the inference duration.
                     self._publish(detections, frame, captured_at,
                                   selected=selected, holding=self._target.waiting)
                     count += 1
@@ -206,6 +241,8 @@ class JetsonCamera(PerceptionCamera):
             self.error = error
             logger.exception('Jetson perception failed; no inference fallback')
         finally:
+            # Revoke health before freeing resources so readers stop using the
+            # last batch even if CUDA cleanup or device shutdown takes time.
             self.ready_event.clear()
             self.stopped_event.set()
             if detector is not None:

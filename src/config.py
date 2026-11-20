@@ -1,4 +1,10 @@
-"""Typed flight settings read from the project root .env at startup."""
+"""Typed, immutable settings read once from the project-root .env at startup.
+
+Flight tuning, notifications and inference selection have separate settings
+objects so each component receives the values relevant to its responsibility.
+Environment variables override file values, matching systemd deployments.
+Runtime code reads these snapshots; editing .env takes effect after restart.
+"""
 
 from dataclasses import dataclass, fields
 import math
@@ -18,6 +24,7 @@ class ConfigurationError(ValueError):
 
 @dataclass(frozen=True)
 class FlightSettings:
+    """Control gains, distance limits and shared detection-confidence threshold."""
     baud_rate: int
     altitude: float
     altitude_fuzziness: float
@@ -50,6 +57,8 @@ class FlightSettings:
 
 
 def _read_values(env_file, environ):
+    # Use a project-root file rather than the caller's working directory. Disable
+    # interpolation so Python reads the same literal values as the service file.
     env_file = Path(env_file)
     if not env_file.is_file():
         raise ConfigurationError(f"Missing {env_file}; copy the project .env.example to .env")
@@ -80,6 +89,7 @@ def load_settings(
 
 @dataclass(frozen=True)
 class NotificationSettings:
+    """Operator feedback settings, separate from movement authority and tuning."""
     text_enabled: bool
     beeps_enabled: bool
     min_interval: float
@@ -125,6 +135,12 @@ def load_notification_settings(
 
 @dataclass(frozen=True)
 class InferenceSettings:
+    """Backend/artifact selection and independent perception/target-loss time limits.
+
+    max_age governs whether a measurement is current enough for movement.
+    target_lost_timeout governs how long to reserve an absent person's track ID.
+    Increasing the latter never makes old positions eligible for movement.
+    """
     backend: str = 'luxonis'
     luxonis_model_path: Path = ENV_FILE.parent / 'models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob'
     jetson_model_path: Path = ENV_FILE.parent / 'models/yolo26m-fp16.engine'
@@ -157,6 +173,8 @@ def load_inference_settings(env_file: Path = ENV_FILE, environ=None) -> Inferenc
         if value is None or not str(value).strip():
             raise ConfigurationError(f'Set {key} in {env_file}')
         if field.endswith('_path'):
+            # Both systemd and manual tools refer to the same model artifacts,
+            # even when invoked from different working directories.
             value = Path(value)
             if not value.is_absolute():
                 value = ENV_FILE.parent / value

@@ -1,3 +1,10 @@
+"""Geographic helpers for short-range location calculations.
+
+These latitude/longitude approximations are separate from camera projection:
+camera/spatial.py uses calibrated RGB pixels plus stereo depth to obtain the
+person's camera-space position, while this module works with DroneKit locations.
+"""
+
 from dronekit import LocationGlobal, LocationGlobalRelative
 import math
 

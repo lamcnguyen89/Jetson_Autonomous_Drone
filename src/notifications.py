@@ -31,6 +31,13 @@ def beep_tune(count):
 
 
 class Notifier:
+    """Operator feedback over the existing connection, outside movement decisions.
+
+    The control loop announces rule changes while MAVLink callbacks handle RC
+    test inputs. One lock protects their shared cooldown/encoder state. Queuing
+    text or a tune is best effort: it does not acknowledge display or playback,
+    and a failure must not become a flight-control dependency.
+    """
     def __init__(self, vehicle, config=None, clock=time.monotonic):
         self.vehicle = vehicle
         self.config = config if config is not None else notification_settings
@@ -205,6 +212,8 @@ class Notifier:
         Failed attempts are also deduplicated to avoid flooding logs or the link.
         """
         with self._lock:
+            # This is called much faster than a human can process announcements.
+            # Deduplicate by state transition, not by control-loop iteration.
             if rule_name == self._last_rule:
                 self._deferred_rule = None
                 return False

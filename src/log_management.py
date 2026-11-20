@@ -1,4 +1,10 @@
-"""Startup retention for flight-service logs."""
+"""Startup retention for flight-service logs.
+
+Repeated connection failures can create many unarmed startup logs. Keep logs
+with evidence of arming/takeoff while pruning unrelated startup attempts, once
+before opening the current session's file. Retention depends on the event text
+below; changes to those logged messages must preserve or update these markers.
+"""
 
 import logging
 from pathlib import Path
@@ -21,6 +27,8 @@ def cleanup_unarmed_logs(log_directory):
     """Delete previous .log files without an arming event; retain unreadable files."""
     removed = 0
     for path in Path(log_directory).glob('*.log'):
+        # Restrict cleanup to regular local log files, leaving symlink targets
+        # and unreadable/corrupt evidence untouched rather than guessing its value.
         if path.is_symlink() or not path.is_file():
             continue
         try:

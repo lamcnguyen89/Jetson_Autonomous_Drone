@@ -20,8 +20,11 @@ def main():
     latest = [None]
 
     def callback(detections, frame):
+        # The acquisition worker replaces the latest frame; the main thread
+        # owns GUI updates and never accumulates a preview backlog.
         latest[0] = frame
 
+    # Reuse the service's factory/configuration, but construct no Core or vehicle.
     camera = create_camera(callback)
     print(f'Camera-only preview: backend={inference_settings.backend}; no MAVLink connection')
     print('The flight service must release the OAK before running this utility.')

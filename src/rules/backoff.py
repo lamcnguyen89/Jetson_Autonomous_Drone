@@ -7,6 +7,8 @@ class BackoffRule(BaseRule):
     '''
 
     def isActive(self):
+        # Core evaluates backoff first, so this threshold can suppress following.
+        # The camera owns target selection; Jetson's result may be a locked ID.
         return self.camera.closestDetection() != None and \
             self.camera.closestDetection().z < settings.backoff_distance
 
@@ -18,6 +20,8 @@ class BackoffRule(BaseRule):
         xDistance = detection.x
         zDistance = detection.z
 
+        # A target nearer than the desired separation produces negative forward
+        # error (backward motion); retain lateral centering at the same time.
         self._targetPosition = (zDistance - settings.minimum_distance, xDistance)
 
     def name(self) -> str:

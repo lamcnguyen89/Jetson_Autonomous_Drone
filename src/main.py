@@ -1,3 +1,11 @@
+"""Flight-service entry point: assemble components and own process startup/shutdown.
+
+The main thread sets up logging, the selected camera, the trusted MAVLink link
+and readiness notifications. A camera worker publishes perception; a separate
+Core worker consumes it and chooses movement commands. main() does not perform
+inference or choose a person-following rule itself.
+"""
+
 import sys
 if sys.version_info[0] < 3:
     raise Exception("Must be using Python 3")
@@ -37,6 +45,7 @@ videoWriter        = None
 
 # See: https://stackoverflow.com/a/66209331
 class LoggerWriter:
+    """Route legacy print() output through the same file/journal logging handlers."""
     def __init__(self, logfct):
         self.logfct = logfct
         self.buf = []
@@ -88,6 +97,12 @@ def signal_handler(sig, frame):
 
 
 def wait_for_camera_ready(camera, timeout, should_stop):
+    """Require current pipeline output before declaring the tracking service ready.
+
+    Starting a thread or opening a USB device does not prove inference works.
+    An empty batch is sufficient; readiness must not require a person in view.
+    Short waits also let a shutdown request cancel startup promptly.
+    """
     logging.info('Waiting for first camera output: timeout=%ss', timeout)
     deadline = time.monotonic() + timeout
     while not should_stop():
@@ -104,6 +119,8 @@ def wait_for_camera_ready(camera, timeout, should_stop):
 
 
 def prepare_tracking_core(vehicle, camera, should_stop):
+    # Readiness is the intersection of perception output and a fresh heartbeat
+    # from the trusted autopilot. Notifications describe that state afterward.
     if not wait_for_camera_ready(camera, notification_settings.camera_ready_timeout, should_stop):
         return None
     if (vehicle._trusted_fc_system_id is None
@@ -164,12 +181,13 @@ def main(args):
     logger.debug('Notification settings: %s', notification_settings)
     logger.info('Inference configuration: %s', inference_settings)
 
-    # messing around with stdout for logging to file
-    # this is nasty but whatever
+    # Capture print-based messages from existing components in the same session log.
     sys.stdout = LoggerWriter(logger.info)
     sys.stderr = LoggerWriter(logger.error)
 
     videoEnabled = args.video
+    # Frame dimensions belong to the selected adapter: the OAK and Jetson paths
+    # use different RGB output sizes, even though both expose the same positions.
     if args.video:
         logging.info('Saving videos to: ' + args.video_path)
 
@@ -186,6 +204,8 @@ def main(args):
             camera = create_camera(camera_callback if videoEnabled else None)
             camera.start()
 
+            # The file killswitch gates controller connection/Core startup.
+            # Camera startup occurs first, so it does not disable acquisition.
             logging.info('Searching for killswitch at: ' + args.killswitch_path)
             if os.path.exists(args.killswitch_path):
                 logging.warning("Killswitch engaged, preventing core run")
@@ -199,7 +219,8 @@ def main(args):
                 logging.info('Flight-controller connection ready: elapsed=%.2fs',
                              time.monotonic() - connection_started)
 
-                # Setup core thread
+                # Keep the flight loop separate from acquisition/GPU work. Core
+                # reads the latest published batch rather than waiting for frames.
                 core = prepare_tracking_core(vehicle, camera, lambda: EXIT)
                 if core is None:
                     return
@@ -215,6 +236,8 @@ def main(args):
         raise
     finally:
         logging.info('Flight service shutting down')
+        # Also clean up partial startup (for example, camera failure after the
+        # MAVLink connection opened but before Core was constructed).
         stop()
         if vehicle is not None and core is None:
             vehicle.close()
