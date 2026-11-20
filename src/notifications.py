@@ -64,6 +64,9 @@ class Notifier:
     def _send(self, message, beeps, severity):
         # Called under the lock. DroneKit's MAVWriter queues bytes to its existing
         # I/O thread; no serial connection, transport write or sleep happens here.
+        # All application status text is NOTICE, including legacy callers that
+        # explicitly supply another severity.
+        severity = mavlink2.MAV_SEVERITY_NOTICE
         self._last_attempt = self._clock()
         logger.info('Notification event: text=%r beeps=%s text_enabled=%s beeps_enabled=%s',
                     message, beeps, self.config.text_enabled, self.config.beeps_enabled)
@@ -94,15 +97,15 @@ class Notifier:
                 logger.warning('Could not queue %s buzzer beeps', beeps, exc_info=True)
         return sent
 
-    def notify(self, message=None, beeps=0, severity=mavlink2.MAV_SEVERITY_INFO):
-        """Send a rate-limited custom event. Returns whether anything was queued."""
+    def notify(self, message=None, beeps=0, severity=mavlink2.MAV_SEVERITY_NOTICE):
+        """Send a rate-limited NOTICE event; severity is retained for compatibility."""
         with self._lock:
             if self._clock() - self._last_attempt < self.config.min_interval:
                 logger.debug('Notification skipped during cooldown: text=%r beeps=%s', message, beeps)
                 return False
             return self._send(message, beeps, severity)
 
-    def status_text(self, message, severity=mavlink2.MAV_SEVERITY_INFO):
+    def status_text(self, message, severity=mavlink2.MAV_SEVERITY_NOTICE):
         return self.notify(message, severity=severity)
 
     def beep(self, count):
@@ -114,12 +117,13 @@ class Notifier:
             if self._ready_announced:
                 return False
             self._ready_announced = True
-            return self._send(READY_MESSAGE, 6, mavlink2.MAV_SEVERITY_INFO)
+            # QGroundControl speaks NOTICE and higher when audio is enabled.
+            return self._send(READY_MESSAGE, 6, mavlink2.MAV_SEVERITY_NOTICE)
 
     def tracking_active(self):
         """Announce each autonomous takeoff, bypassing the notification cooldown."""
         with self._lock:
-            return self._send(ACTIVE_MESSAGE, 2, mavlink2.MAV_SEVERITY_INFO)
+            return self._send(ACTIVE_MESSAGE, 2, mavlink2.MAV_SEVERITY_NOTICE)
 
     def start_rc_notifications(self):
         """Listen for RC9/RC12 test inputs, independently of flight mode/arming."""
@@ -169,7 +173,7 @@ class Notifier:
         if active:
             logger.info('RC9 notification button activated: PWM=%d', pwm)
             # A deliberate button press must not be dropped by rule cooldown.
-            self._send(RC9_READY_MESSAGE, 3, mavlink2.MAV_SEVERITY_INFO)
+            self._send(RC9_READY_MESSAGE, 3, mavlink2.MAV_SEVERITY_NOTICE)
         else:
             logger.debug('RC9 notification button released: PWM=%d', pwm)
 
@@ -191,7 +195,7 @@ class Notifier:
         if zone is not None:
             # Wheel test events bypass cooldown, just like the RC9 test button.
             message = RC12_HIGH_MESSAGE if zone == 'high' else RC12_LOW_MESSAGE
-            self._send(message, 2, mavlink2.MAV_SEVERITY_INFO)
+            self._send(message, 2, mavlink2.MAV_SEVERITY_NOTICE)
 
     def update_rule(self, rule_name):
         """Called each control cycle; only changed rules produce notifications.
@@ -215,4 +219,4 @@ class Notifier:
                 logger.warning('No notification defined for rule %s', rule_name)
                 return False
             count = getattr(self.config, rule_name + '_beeps')
-            return self._send(RULE_MESSAGES[rule_name], count, mavlink2.MAV_SEVERITY_INFO)
+            return self._send(RULE_MESSAGES[rule_name], count, mavlink2.MAV_SEVERITY_NOTICE)

@@ -81,7 +81,7 @@ def test_rc12_endpoints_send_distinct_text_and_two_beeps(rc12_wheel, pwm, text):
         return
     status, tune = messages
     assert status.get_type() == 'STATUSTEXT' and status.text == text
-    assert status.severity == mavlink.MAV_SEVERITY_INFO
+    assert status.severity == mavlink.MAV_SEVERITY_NOTICE
     assert tune.get_type() == 'PLAY_TUNE' and tune.tune == 'MFT240L8O5CP8C'
     assert tune.target_system == 42 and tune.target_component == 1
     assert status.get_srcSystem() == 42 and status.get_srcComponent() == 191
@@ -200,7 +200,7 @@ def test_rc9_pwm_range_and_exact_notification(rc9_button, pwm, active):
         return
     text, tune = messages
     assert text.get_type() == 'STATUSTEXT' and text.text == 'Person Tracking Ready'
-    assert text.severity == mavlink.MAV_SEVERITY_INFO
+    assert text.severity == mavlink.MAV_SEVERITY_NOTICE
     assert tune.get_type() == 'PLAY_TUNE' and tune.tune == 'MFT240L8O5CP8CP8C'
     assert tune.target_system == 42 and tune.target_component == mavlink.MAV_COMP_ID_AUTOPILOT1
 
@@ -278,7 +278,7 @@ def test_ready_is_once_and_has_six_beeps_with_correct_wire_identity(notifier):
     assert not sender.service_ready()
     text, tune = writer.messages()
     assert text.get_type() == 'STATUSTEXT' and text.text == READY_MESSAGE
-    assert text.severity == mavlink.MAV_SEVERITY_INFO
+    assert text.severity == mavlink.MAV_SEVERITY_NOTICE
     assert tune.get_type() == 'PLAY_TUNE' and tune.tune.count('C') == 6
     assert tune.tune == 'MFT240L8O5CP8CP8CP8CP8CP8C'
     assert tune.target_system == 42 and tune.target_component == mavlink.MAV_COMP_ID_AUTOPILOT1
@@ -295,7 +295,7 @@ def test_activation_has_exact_text_and_two_beeps_even_during_cooldown(notifier):
     assert sender.tracking_active()
     text, tune = writer.messages()[-2:]
     assert text.get_type() == 'STATUSTEXT' and text.text == 'Human Tracking Active'
-    assert text.severity == mavlink.MAV_SEVERITY_INFO
+    assert text.severity == mavlink.MAV_SEVERITY_NOTICE
     assert tune.get_type() == 'PLAY_TUNE' and tune.tune == 'MFT240L8O5CP8C'
     assert tune.target_system == 42 and tune.target_component == mavlink.MAV_COMP_ID_AUTOPILOT1
     assert not sender.update_rule('follow')
@@ -392,9 +392,10 @@ def test_unknown_controller_identity_does_not_broadcast_to_arbitrary_system(noti
     assert not writer.packets
 
 
-def test_custom_notifications_and_channel_helpers(notifier):
+@pytest.mark.parametrize('severity', range(8))
+def test_custom_notifications_and_channel_helpers(notifier, severity):
     sender, writer, clock = notifier
-    assert sender.status_text('Custom event', mavlink.MAV_SEVERITY_NOTICE)
+    assert sender.status_text('Custom event', severity)
     assert not sender.beep(2)
     clock[0] = 3.0
     assert sender.beep(2)
@@ -410,7 +411,7 @@ def test_status_text_logs_attempt_before_queue_and_reports_outcome(notifier, cap
 
     def write(packet):
         # The attempt must already be recorded, even if the queue write fails.
-        assert "STATUSTEXT send attempt: severity=4 text='Debug test'" in caplog.text
+        assert "STATUSTEXT send attempt: severity=5 text='Debug test'" in caplog.text
         if fail:
             raise OSError('Queue unavailable')
         return original_write(packet)
@@ -423,7 +424,7 @@ def test_status_text_logs_attempt_before_queue_and_reports_outcome(notifier, cap
         assert 'Queue unavailable' in caplog.text
         assert 'STATUSTEXT queued:' not in caplog.text
     else:
-        assert 'STATUSTEXT queued: src_system=42 src_component=191 severity=4' in caplog.text
+        assert 'STATUSTEXT queued: src_system=42 src_component=191 severity=5' in caplog.text
         assert writer.messages()[0].text == 'Debug test'
 
 
