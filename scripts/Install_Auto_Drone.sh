@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Installation order: resolve account/config -> native/Python dependencies ->
-# validate or prepare YOLO26m -> install device permissions -> enable service.
+# validate or prepare YOLO26m -> install device permissions -> remove conflicting
+# services -> enable service.
 # Model preparation runs as SERVICE_USER and completes before service changes;
 # only --start requests an immediate restart. Inference selection stays in .env.
 
@@ -11,6 +12,7 @@ usage() {
     echo "Install both inference backends, project .venv, permissions and the service."
     echo "Prepare YOLO26m automatically when no valid TensorRT engine is available."
     echo "Creates a missing .env from .env.example; keeps existing configuration."
+    echo "Uninstalls conflicting Compact VLA, RLDS recorder and MAVROS services."
     echo "Connect the MAVLink controller and check the configured port before running."
     echo "  --with-sitl  Also install simulation and test dependencies."
     echo "  --start      Also start/restart the service now (always enabled at boot)."
@@ -272,6 +274,36 @@ if ! run_as_service_user test -r "$MAVLINK_PORT" || \
     exit 1
 fi
 echo "Verified $SERVICE_USER can read/write $MAVLINK_PORT."
+
+# Stop competing hardware users before enabling Auto_Drone. Wait until all
+# validation succeeds so a failed preparation leaves existing services intact.
+conflicting_units=(
+    compact-vla-clock.service
+    compact-vla-drone.service
+    compact-vla-server.service
+    luxonis-rlds-recorder.service
+    mavros-stream-monitor.service
+    mavros.service
+)
+system_unit_dirs=(
+    /etc/systemd/system /run/systemd/system
+    /usr/local/lib/systemd/system /usr/lib/systemd/system /lib/systemd/system
+)
+for conflicting_unit in "${conflicting_units[@]}"; do
+    load_state="$(systemctl show --property=LoadState --value "$conflicting_unit")"
+    if [[ "$load_state" != not-found ]]; then
+        echo "Stopping and disabling $conflicting_unit."
+        systemctl stop "$conflicting_unit"
+        systemctl disable "$conflicting_unit"
+    fi
+    # Remove unit files, masks/symlinks and per-unit overrides from standard
+    # system locations. Leave the other applications and their data in place.
+    for unit_dir in "${system_unit_dirs[@]}"; do
+        rm -f -- "$unit_dir/$conflicting_unit"
+        rm -rf -- "$unit_dir/$conflicting_unit.d"
+    done
+done
+
 install -m 0644 "$render_dir/$unit_name" "/etc/systemd/system/$unit_name"
 systemctl daemon-reload
 systemctl enable "$unit_name"

@@ -83,8 +83,12 @@ The installer preserves your `.env` and its selected inference backend.
 The script discovers the project location, so an absolute path to the installer
 also works from another working directory. It validates dependencies and the
 rendered service before installing `/etc/systemd/system/Auto_Drone.service`.
-Add `--start` to also start/restart it immediately. Stop and disable any older
-drone service before running this one, so only one process accesses the controller.
+Before enabling Auto_Drone, the installer stops, disables, and removes these
+conflicting system services and their overrides if installed:
+`compact-vla-clock.service`, `compact-vla-drone.service`,
+`compact-vla-server.service`, `luxonis-rlds-recorder.service`,
+`mavros-stream-monitor.service`, and `mavros.service`. Their application files
+and data are preserved. Add `--start` to also start/restart Auto_Drone immediately.
 On subsequent installs, an active service keeps running until restarted; use
 `--start` when ready to apply dependency changes to that process.
 

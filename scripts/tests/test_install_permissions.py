@@ -48,7 +48,12 @@ if state.get('model_preparation_fails'):
     # Isolate the privilege boundary. The rest of the actual installer runs.
     text = (ROOT / 'scripts/Install_Auto_Drone.sh').read_text()
     text = text.replace('if (( EUID != 0 )); then', 'if false; then')
-    text = text.replace('/etc/systemd/system/$unit_name', str(units / '$unit_name'))
+    for index, unit_dir in enumerate(('/etc/systemd/system', '/run/systemd/system',
+                                     '/usr/local/lib/systemd/system',
+                                     '/usr/lib/systemd/system', '/lib/systemd/system')):
+        isolated_dir = units if index == 0 else tmp_path / f'unit-path-{index}'
+        isolated_dir.mkdir(exist_ok=True)
+        text = text.replace(unit_dir, str(isolated_dir))
     text = text.replace('/etc/udev/rules.d/', str(rules) + '/')
     script.write_text(text)
     user = getpass.getuser()
@@ -84,6 +89,11 @@ elif name == 'usermod':
     state['groups'].append('dialout')
 elif name == 'apt-cache':
     sys.exit(100)
+elif name == 'systemctl':
+    if args[0] == 'show':
+        print(state.get('unit_load_states', {}).get(args[-1], 'not-found'))
+    elif args[0] in ('stop', 'disable') and state.get('service_cleanup_fails') == args[0]:
+        sys.exit(1)
 elif name == 'udevadm' and args[0] == 'info':
     print('SUBSYSTEM=' + state['subsystem'])
     print('ID_BUS=usb\\nID_VENDOR_ID=1209\\nID_MODEL_ID=5741')
@@ -255,3 +265,63 @@ def test_model_preparation_failure_prevents_service_install_or_restart(installer
     assert ['prepare-model', '--if-needed'] in calls
     assert not (units / 'Auto_Drone.service').exists()
     assert not any(c[0] == 'systemctl' for c in calls)
+
+
+CONFLICTING_UNITS = (
+    'compact-vla-clock.service', 'compact-vla-drone.service',
+    'compact-vla-server.service', 'luxonis-rlds-recorder.service',
+    'mavros-stream-monitor.service', 'mavros.service',
+)
+
+
+def test_conflicting_services_are_uninstalled_before_enabling_auto_drone(installer):
+    run, _, units, _, _ = installer
+    unit_dirs = [units, *sorted(units.parent.glob('unit-path-*'))]
+    for directory in unit_dirs:
+        for unit in CONFLICTING_UNITS:
+            (directory / unit).write_text('[Service]\nExecStart=/bin/true\n')
+            overrides = directory / (unit + '.d')
+            overrides.mkdir()
+            (overrides / 'override.conf').write_text('[Service]\nRestart=always\n')
+        (directory / 'unrelated.service').write_text('keep me')
+    # Also exercise a masked unit (a symlink to /dev/null).
+    masked = units / CONFLICTING_UNITS[0]
+    masked.unlink()
+    masked.symlink_to('/dev/null')
+    load_states = dict.fromkeys(CONFLICTING_UNITS, 'loaded')
+    load_states[CONFLICTING_UNITS[0]] = 'masked'
+    result, calls = run('--start', unit_load_states=load_states)
+    assert result.returncode == 0, result.stdout + result.stderr
+    prepare = calls.index(['prepare-model', '--if-needed'])
+    reload = calls.index(['systemctl', 'daemon-reload'])
+    enable = calls.index(['systemctl', 'enable', 'Auto_Drone.service'])
+    restart = calls.index(['systemctl', 'restart', 'Auto_Drone.service'])
+    for unit in CONFLICTING_UNITS:
+        stop = calls.index(['systemctl', 'stop', unit])
+        disable = calls.index(['systemctl', 'disable', unit])
+        assert prepare < stop < disable < reload < enable < restart
+        for directory in unit_dirs:
+            assert not (directory / unit).exists()
+            assert not (directory / unit).is_symlink()
+            assert not (directory / (unit + '.d')).exists()
+    assert all((directory / 'unrelated.service').read_text() == 'keep me'
+               for directory in unit_dirs)
+
+    result, calls = run(unit_load_states={})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not any(c[:2] in (['systemctl', 'stop'], ['systemctl', 'disable'])
+                   for c in calls)
+
+
+@pytest.mark.parametrize('command', ['stop', 'disable'])
+def test_conflicting_service_cleanup_failure_prevents_auto_drone_install(installer, command):
+    run, _, units, _, _ = installer
+    unit = CONFLICTING_UNITS[0]
+    (units / unit).write_text('keep until stopped and disabled')
+    result, calls = run('--start', unit_load_states={unit: 'loaded'},
+                        service_cleanup_fails=command)
+    assert result.returncode != 0
+    assert (units / unit).exists()
+    assert not (units / 'Auto_Drone.service').exists()
+    assert not any(c[:2] in (['systemctl', 'enable'], ['systemctl', 'restart'])
+                   for c in calls)
