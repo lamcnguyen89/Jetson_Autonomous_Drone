@@ -19,7 +19,8 @@ def camera():
 @pytest.fixture
 def startup(monkeypatch):
     events = []
-    notifier = SimpleNamespace(service_ready=lambda: events.append('ready'))
+    notifier = SimpleNamespace(service_ready=lambda: events.append('ready'),
+                               start_rc_notifications=lambda: events.append('rc'))
     core = SimpleNamespace(notifier=notifier)
     monkeypatch.setattr(app, 'Notifier', lambda vehicle: notifier)
     def make_core(vehicle, camera, notifier):
@@ -34,7 +35,7 @@ def test_ready_is_after_camera_output_and_core_initialization(camera, startup):
     vehicle, events, core = startup
     camera.ready_event.set()
     assert app.prepare_tracking_core(vehicle, camera, lambda: False) is core
-    assert events == ['core', 'ready']
+    assert events == ['core', 'ready', 'rc']
 
 
 def test_camera_timeout_never_announces_ready(camera, startup):
@@ -109,7 +110,19 @@ def test_ready_notification_error_does_not_prevent_core_start(camera, startup, m
         raise OSError('Notification unavailable')
     monkeypatch.setattr(core.notifier, 'service_ready', fail)
     assert app.prepare_tracking_core(vehicle, camera, lambda: False) is core
-    assert events == ['core']
+    assert events == ['core', 'rc']
+
+
+def test_rc_setup_error_does_not_prevent_core_start(camera, startup, monkeypatch):
+    vehicle, events, core = startup
+    camera.ready_event.set()
+
+    def fail():
+        raise OSError('RC telemetry unavailable')
+
+    monkeypatch.setattr(core.notifier, 'start_rc_notifications', fail)
+    assert app.prepare_tracking_core(vehicle, camera, lambda: False) is core
+    assert events == ['core', 'ready']
 
 
 @pytest.fixture
@@ -171,3 +184,48 @@ def test_main_prepares_notifications_before_starting_control_thread(main_runtime
     app.main(args)
     assert events.index('ready') < events.index('core-start')
     assert 'core-stop' in events and 'camera-stop' in events
+
+
+def test_main_cleans_logs_once_before_opening_log_and_connecting(main_runtime, monkeypatch):
+    from pathlib import Path
+    args, events, _, _ = main_runtime
+    directory = Path(args.log_path)
+    failed = directory / '0.log'
+    failed.write_text('Connection failed\n')
+    retained = directory / '2.log'
+    retained.write_text('Vehicle armed 1\n')
+    cleanup_calls = []
+    cleanup = app.cleanup_unarmed_logs
+
+    def record_cleanup(path):
+        cleanup_calls.append(path)
+        assert not events
+        assert not (directory / '3.log').exists()
+        return cleanup(path)
+
+    def fail_connection(*args, **kwargs):
+        assert not failed.exists()
+        assert (directory / '3.log').exists()
+        raise OSError('Flight controller unavailable')
+
+    monkeypatch.setattr(app, 'cleanup_unarmed_logs', record_cleanup)
+    monkeypatch.setattr(app, 'connect', fail_connection)
+    with pytest.raises(OSError, match='Flight controller unavailable'):
+        app.main(args)
+
+    assert cleanup_calls == [args.log_path]
+    assert retained.read_text() == 'Vehicle armed 1\n'
+    assert (directory / '3.log').exists()
+    assert events == ['camera-start', 'camera-stop']
+
+
+def test_control_thread_failure_records_traceback(monkeypatch, caplog):
+    monkeypatch.setattr(app, 'EXIT', False)
+
+    def fail():
+        raise RuntimeError('Control loop failure')
+
+    with pytest.raises(RuntimeError, match='Control loop failure'):
+        app.core_thread(SimpleNamespace(run=fail))
+    assert 'Control thread failed' in caplog.text
+    assert any(record.exc_info for record in caplog.records)

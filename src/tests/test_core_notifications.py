@@ -44,3 +44,21 @@ def test_notifier_exception_does_not_prevent_movement_command(monkeypatch, caplo
     core.run()
     assert commands == [((1, 2), 3)]
     assert 'movement control continues' in caplog.text
+
+
+def test_every_rule_transition_is_logged_even_when_notifications_are_suppressed(caplog):
+    core = Core(fake_vehicle(), object(), SimpleNamespace(update_rule=lambda rule: False))
+    active = ['follow']
+    core.rules = [SimpleNamespace(update=lambda: None, isActive=lambda: True,
+                                 getState=lambda: ((1, 2), 3), name=lambda: active[0])]
+    with caplog.at_level('INFO'):
+        for rule in ['follow', 'follow', 'search', 'backoff', 'backoff', 'follow']:
+            active[0] = rule
+            assert core._rule_command() == ((1, 2), 3)
+
+    transitions = [r.message for r in caplog.records if 'Tracking rule transition:' in r.message]
+    assert len(transitions) == 4
+    for message, change in zip(transitions, ['n/a -> follow', 'follow -> search',
+                                           'search -> backoff', 'backoff -> follow']):
+        assert change in message
+        assert 'position_error=(1, 2) yaw_rate=3' in message

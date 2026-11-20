@@ -55,39 +55,49 @@ class Core:
         ]
 
         # Enter ready state
-        self.state = ExecutionState.AwaitingArm
+        self._set_state(ExecutionState.AwaitingArm, 'core initialized')
+
+    def _set_state(self, state, reason):
+        previous = self.state
+        self.state = state
+        if previous != state:
+            logger.info('Core state transition: %s -> %s; reason=%s', previous.value, state.value, reason)
 
     #### Callbacks
 
     def modeCallback(self, _, _1, _2) -> None:
-        print("Vehicle mode %s" % (self.vehicle.mode,))
+        logger.info('Vehicle mode %s', self.vehicle.mode)
 
         if self.vehicle.mode.name != "GUIDED" and self.state not in [ExecutionState.Init, ExecutionState.ConnectionLoss, ExecutionState.Stop]:
-            self.state = ExecutionState.PilotOnly
+            self._set_state(ExecutionState.PilotOnly, 'vehicle left GUIDED mode')
         elif self.vehicle.mode.name == "GUIDED":
             if self.isReady() and self.isConnected():
                 # Go into loiter mode because this is totally undefined now
                 # The pilot needs to set the vehicle down and then switch back into GUIDED
-                print('Cannot restart core flow due to being airborne!')
+                logger.warning('Cannot restart core flow due to being airborne; commanding guided hold')
                 setPositionTarget(self.vehicle, (0,0), 0)
                 return
 
             if self.vehicle.armed:
+                logger.info('Requesting disarm before restarting core flow in GUIDED mode')
                 self.vehicle.disarm()
 
             # Only reset to AwaitingArm if we're not already in a takeoff sequence
             if self.state in [ExecutionState.Init, ExecutionState.PilotOnly, ExecutionState.ConnectionLoss]:
-                self.state = ExecutionState.AwaitingArm
+                self._set_state(ExecutionState.AwaitingArm, 'GUIDED mode selected')
 
     def armedCallback(self, _, _1, _2) -> None:
-        print("Vehicle armed %d" % (self.vehicle.armed,))
+        logger.info('Vehicle armed %d', self.vehicle.armed)
 
         if not self.vehicle.armed and self.state != ExecutionState.Init:
-            self.state = ExecutionState.AwaitingArm
+            self._set_state(ExecutionState.AwaitingArm, 'vehicle disarmed')
 
     def lastHeartbeatCallback(self, _, _1, _2) -> None:
         if not self.isConnected() and self.state != ExecutionState.Init:
-            self.state = ExecutionState.ConnectionLoss
+            if self.state != ExecutionState.ConnectionLoss:
+                logger.warning('Flight-controller heartbeat timeout: age=%.2fs limit=%.2fs',
+                               self.vehicle.last_heartbeat, settings.heartbeat_timeout)
+            self._set_state(ExecutionState.ConnectionLoss, 'flight-controller heartbeat timed out')
 
     #### Getters
 
@@ -104,15 +114,17 @@ class Core:
     def isConnected(self) -> bool:
         return self.vehicle.last_heartbeat < settings.heartbeat_timeout
 
-    def armable(self) -> bool:
-        return not self.vehicle.armed and \
-                self.vehicle.is_armable and \
+    def readyForTakeoff(self) -> bool:
+        # Arming belongs to the pilot and the flight controller's normal checks.
+        return self.vehicle.armed and \
                 self.vehicle.mode.name == "GUIDED" and \
-                self.camera.running()
+                self.camera.running() and \
+                self.isConnected()
 
     #### State machine
 
     def _rule_command(self):
+        previous_rule = self.activeRule
         for rule in self.rules:
             rule.update()
 
@@ -122,6 +134,10 @@ class Core:
                 state = rule.getState()
                 self.activeRule = rule.name()
                 break
+
+        if self.activeRule != previous_rule:
+            logger.info('Tracking rule transition: %s -> %s; position_error=%s yaw_rate=%s',
+                        previous_rule, self.activeRule, state[0], state[1])
 
         if self.notifier is not None:
             try:
@@ -142,35 +158,50 @@ class Core:
                 time.sleep(1)
                 pass
             elif self.state is ExecutionState.AwaitingArm:
-                if self.armable():
+                if self.readyForTakeoff():
+                    logger.info('Takeoff safety delay started: duration=5s altitude=%sm', settings.altitude)
                     time.sleep(5) # safety delay
 
-                    if self.state != ExecutionState.Stop:
-                        self.state = ExecutionState.Takeoff
+                    # Pilot/connection callbacks can interrupt the delay.
+                    if self.state is ExecutionState.AwaitingArm and self.readyForTakeoff():
+                        self._set_state(ExecutionState.Takeoff, 'takeoff safety delay completed')
+                    else:
+                        logger.info('Takeoff safety delay cancelled: state=%s armed=%s mode=%s '
+                                    'camera_running=%s connected=%s', self.state.value,
+                                    self.vehicle.armed, self.vehicle.mode.name,
+                                    self.camera.running(), self.isConnected())
 
                 else:
                     time.sleep(1)
 
             elif self.state is ExecutionState.Takeoff:
-                print('takeoff mode')
+                logger.info('takeoff mode')
 
-                # Takeoff and wait until we hit altitude
+                # Recheck immediately before takeoff; never arm or re-arm here.
+                if not self.readyForTakeoff():
+                    logger.warning('Takeoff cancelled by final readiness check: armed=%s mode=%s '
+                                   'camera_running=%s connected=%s', self.vehicle.armed,
+                                   self.vehicle.mode.name, self.camera.running(), self.isConnected())
+                    if self.vehicle.mode.name != 'GUIDED':
+                        self._set_state(ExecutionState.PilotOnly, 'takeoff requires GUIDED mode')
+                    elif not self.isConnected():
+                        self._set_state(ExecutionState.ConnectionLoss, 'takeoff requires a live connection')
+                    else:
+                        self._set_state(ExecutionState.AwaitingArm, 'takeoff readiness lost')
+                    continue
 
-                # Confirm vehicle armed before attempting to take off
-                while not self.vehicle.armed and self.state is ExecutionState.Takeoff:
-                    self.vehicle.armed = True
-
-                    print('Waiting for arming...')
-                    time.sleep(1)
-
-                # If state changes happens during the above inner loop
-                if self.state != ExecutionState.Takeoff: continue
-
-                print('Take off to ' + str(settings.altitude) + 'm')
+                logger.info('Take off to %sm; queuing simple_takeoff command', settings.altitude)
                 self.vehicle.simple_takeoff(settings.altitude)
+                logger.info('Takeoff command queued; waiting for altitude')
+
+                if self.notifier is not None:
+                    try:
+                        self.notifier.tracking_active()
+                    except Exception:
+                        logger.exception('Tracking activation notification failed; takeoff continues')
 
                 # Wait until the vehicle reaches altitude
-                self.state = ExecutionState.AwaitingReady
+                self._set_state(ExecutionState.AwaitingReady, 'takeoff command queued')
 
             elif self.state is ExecutionState.AwaitingReady:
                 if self.isReady() and self.isConnected() and self.isAltitudeOk():
@@ -178,13 +209,11 @@ class Core:
                     for rule in self.rules:
                         rule.reset()
 
-                    print('entered running state')
-
-                    self.state = ExecutionState.Running
+                    self._set_state(ExecutionState.Running, 'flight ready and target altitude reached')
 
                 # Shouldn't really happen, but here just in case!
                 elif self.vehicle.mode.name != 'GUIDED':
-                    self.state = ExecutionState.PilotOnly
+                    self._set_state(ExecutionState.PilotOnly, 'vehicle left GUIDED during takeoff')
 
                 time.sleep(0.1)
 
@@ -212,14 +241,16 @@ class Core:
 
         if self.isReady() and self.isConnected() and self.isAltitudeOk():
             # Land now!
+            logger.warning('Core stopped while airborne; requesting RTL and waiting for landing')
             self.vehicle.mode = VehicleMode('RTL')
             self.vehicle.wait_for_alt(0)
 
         if self.vehicle.armed:
+            logger.info('Requesting disarm during core shutdown')
             self.vehicle.disarm()
 
     def stop(self) -> None:
-        self.state = ExecutionState.Stop
+        self._set_state(ExecutionState.Stop, 'stop requested')
 
         # Cleanup
         self.vehicle.close()

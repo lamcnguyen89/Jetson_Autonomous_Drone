@@ -115,6 +115,74 @@ checks the flight configuration as part of its application import check before
 installing/enabling the service. Simulation-only camera settings remain in
 `simulation/constants.py`.
 
+## Log retention
+
+On every service process startup (including automatic restarts), the service
+scans previous `.log` files in `--log_path` (the project `logs/` directory by
+default) and deletes those without a recorded arming attempt. Cleanup runs once,
+before opening the new session's log, so the current log stays available until
+the next startup even if the flight controller cannot connect.
+
+Logs are retained when they contain a reported armed state (`Vehicle armed 1`),
+an arm rejection (`Arm: ...`), `Arming motors`, or takeoff activity. Legacy
+`Waiting for arming...` logs and flight-controller acknowledgements of
+`MAV_CMD_COMPONENT_ARM_DISARM` are retained too (an acknowledgement alone cannot
+distinguish an arm request from a disarm request). Waiting in `AWAITING_ARM`, routine
+`PreArm:` warnings, and connection tracebacks do not count as arming attempts.
+Unreadable logs are retained with a warning. Other file types, subdirectories,
+and symlinks are left alone. New log numbers follow the highest retained number
+to avoid appending to a retained flight log after cleanup leaves numbering gaps.
+
+## Debugging logs
+
+Each log line includes a timestamp, severity, logger name, and thread name.
+Startup records the selected connection, baud rate, process ID, log path, and
+flight/notification settings. Connection readiness, camera readiness, shutdown,
+and exceptions in startup or the control thread are recorded too.
+
+- Notifications record the requested text/beep count and enable switches. Each
+  `STATUSTEXT send attempt` includes severity and text; `STATUSTEXT queued` confirms
+  that the local MAVLink queue accepted it. Queue failures include tracebacks.
+  Queue success does not confirm reception or display on Herelink. Buzzer send
+  attempts and telemetry stream requests are also logged. Custom notifications
+  skipped during cooldown and rule announcements deferred by cooldown have DEBUG
+  entries; repeated control cycles do not repeat the same deferred-rule entry.
+- Every winning tracking-rule change records the old/new rule and its initial
+  position error and yaw rate, independently of notification settings/cooldown.
+  Core state transitions record their reason. Arming, mode changes, heartbeat
+  timeouts, takeoff delay/cancellation, takeoff commands, and shutdown flight
+  commands are recorded without logging each movement command.
+- Incoming `STATUSTEXT` (including pre-arm failures and flight-controller warnings)
+  is recorded once by DroneKit's `autopilot` logger at its original severity.
+  Trusted flight-controller `COMMAND_ACK` messages include source IDs, command and
+  result names/numbers, progress, and result details; rejected commands use WARNING.
+  Heartbeat mode/armed/system-status, sensor-health masks, GPS fix type, and EKF
+  flags are logged on their first sample and when they change. Unchanged telemetry
+  packets are omitted. GPS entries include satellite count; sensor-health entries
+  include battery voltage/remaining capacity at that moment.
+
+The service already logs at DEBUG level. To watch its journal during startup:
+
+```bash
+journalctl -u Auto_Drone.service -f
+```
+
+The existing retention policy still removes sessions without an arming attempt on
+the next startup; copy a startup-only log elsewhere if you need to keep it.
+
+## Arming and autonomous takeoff
+
+Select GUIDED mode, then press your normal arm button, using the same arming
+procedure as manual flight. The flight controller must accept the arm request;
+its normal pre-arm checks, including any low-throttle requirement, still apply.
+The tracking service never sends an arm command, so selecting GUIDED or lowering
+the throttle alone will not arm the drone.
+
+Once the controller reports armed, the camera is running, and the connection is
+healthy, the service waits five seconds before commanding takeoff to `ALTITUDE`.
+Disarming, leaving GUIDED, losing the connection, or stopping the camera prevents
+takeoff. After a disarm, use the arm button again to start another takeoff.
+
 ## Status text and buzzer notifications
 
 The flight service shares one `Notifier` (`src/notifications.py`) between startup
@@ -123,6 +191,10 @@ and `Core`. It queues MAVLink packets through the existing DroneKit connection.
 | Event | Status text | Default beeps |
 | --- | --- | --- |
 | Service ready | `Human Tracking Service Ready` | 6 |
+| Autonomous takeoff after the five-second delay | `Human Tracking Active` | 2 |
+| RC9 enters PWM 1600-2000 | `Person Tracking Ready` | 3 |
+| RC12 wheel enters high end (PWM >=1800) | `RC12 Wheel High` | 2 |
+| RC12 wheel enters low end (PWM <=1200) | `RC12 Wheel Low` | 2 |
 | Backoff | `Tracking: Backoff - person too close` | 3 |
 | Follow | `Tracking: Following person` | 1 |
 | Search | `Tracking: Target lost - searching` | 2 |
@@ -135,6 +207,42 @@ person, arming, takeoff or GUIDED mode is required for this announcement. Startu
 cancellation, an active startup killswitch, camera failure, or camera timeout
 prevents it. Camera startup waits are bounded and cancelled pipelines can stop
 without blocking forever on an empty output queue.
+
+Each autonomous takeoff requests two beeps and `Human Tracking Active` after the
+five-second delay and final takeoff checks. A cancelled takeoff does not announce
+activation. Activation bypasses the notification cooldown, then starts a new
+cooldown so a rule announcement does not immediately replace it. The existing
+text and buzzer enable switches apply to this announcement too.
+
+After service readiness, the RC9 button can test the notification path in any
+flight mode, including while disarmed. Set the button's active PWM to 1600-2000
+(inclusive). Entering that range requests three beeps and `Person Tracking Ready`
+once; holding it active does not repeat. Release it to a PWM outside that range
+before pressing again. The first valid RC9 sample also triggers if already active
+at service startup. Missing/invalid samples do not count as releases.
+This button only sends notifications; it does not arm or start tracking.
+
+The RC12 wheel is also a notification-only test in any flight mode, including
+while disarmed. Turning it to the high end (PWM >=1800) sends `RC12 Wheel High`
+and requests two beeps; turning to the low end (PWM <=1200) sends
+`RC12 Wheel Low` and requests two beeps. Holding an endpoint does not repeat.
+To trigger the same endpoint again, move below 1700 after high or above 1300
+after low, then return to that endpoint. This 100-PWM release margin avoids
+repeated notifications from jitter. Moving directly to the opposite endpoint
+triggers its message immediately. The first valid sample also triggers if the
+wheel is already at an endpoint when listening starts. Samples outside PWM
+800-2200 or without channel 12 are ignored and do not count as releases.
+Logs include `RC12 wheel transition: ...; PWM=...` plus the status-text and beep
+send attempts. The two test messages are defined as `RC12_HIGH_MESSAGE` and
+`RC12_LOW_MESSAGE` in `src/notifications.py`.
+
+The service listens directly for `RC_CHANNELS` from the trusted flight controller
+and requests it at 10 Hz through the existing MAVLink link. RC9 presses and RC12
+endpoint events bypass the notification cooldown and honor the text/buzzer
+enable switches. Logs show
+`RC9 notification button activated: PWM=...` and `Person Tracking Ready` when a
+press is detected. These logs confirm detection and the send attempt; verify
+actual message reception on Herelink separately from hearing the aircraft buzzer.
 
 Rule announcements begin when the flight state reaches `Running`. Only changes
 to the rule that actually wins priority are announced. Repeated control cycles
@@ -149,7 +257,8 @@ Configure notifications in the root `.env` and restart the service:
   controlling each output independently.
 - `NOTIFICATIONS_MIN_INTERVAL`: minimum seconds between rule/custom events
   (default example: 3). Zero disables the interval, while duplicate rules still
-  remain silent. The one-time ready announcement bypasses the interval.
+  remain silent. Service-ready, tracking-activation, RC9 button, and RC12 wheel
+  announcements bypass the interval.
 - `CAMERA_READY_TIMEOUT`: positive seconds to wait for the camera's first output
   (default example: 30). Timeout fails startup and closes the camera/link.
 - `NOTIFICATIONS_BACKOFF_BEEPS`, `NOTIFICATIONS_FOLLOW_BEEPS`,

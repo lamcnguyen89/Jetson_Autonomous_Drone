@@ -6,7 +6,7 @@ from typing import Tuple
 from src.dronekit_compat import apply_dronekit_compatibility
 apply_dronekit_compatibility()
 
-from dronekit import connect, Vehicle
+from dronekit import connect, Vehicle, VehicleMode
 from dronekit_sitl import SITL
 from core import Core, ExecutionState
 from .mock_camera import MockCamera
@@ -124,13 +124,17 @@ def prepareForTest(timeout = True, verbose=False) -> Tuple[Core, Vehicle, MockCa
 
     # Setup initial state to get the drone "flying"
 
-    vehicle.mode = 'GUIDED'
-    core.state = ExecutionState.Takeoff
+    vehicle.mode = VehicleMode('GUIDED')
 
     print('waiting for vehicle start')
 
     start = time.time()
     while True:
+        # Simulate the pilot's arm button after GUIDED and pre-arm readiness.
+        # Core itself must never send an arm command.
+        if vehicle.mode.name == 'GUIDED' and vehicle.is_armable and not vehicle.armed:
+            vehicle.armed = True
+
         if core.state == ExecutionState.Running:
             print('started')
             break

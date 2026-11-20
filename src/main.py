@@ -16,6 +16,7 @@ from core import Core
 from camera.yolocam import YoloCamera
 from filtered_vehicle import FlightControllerVehicle
 from notifications import Notifier
+from log_management import cleanup_unarmed_logs, next_log_path
 
 import argparse
 import time
@@ -56,9 +57,14 @@ def core_thread(core):
     if EXIT:
         return
 
-    logging.debug('Running core')
-    core.run()
-    logging.debug('Stopped core')
+    logging.info('Control thread starting')
+    try:
+        core.run()
+    except Exception:
+        logging.exception('Control thread failed')
+        raise
+    finally:
+        logging.info('Control thread stopped')
 
 def camera_callback(detections, cvFrame):
     global videoWriter
@@ -76,10 +82,12 @@ def stop():
         camera.stop()
 
 def signal_handler(sig, frame):
+    logging.info('Received signal %s; stopping service', signal.Signals(sig).name)
     stop()
 
 
 def wait_for_camera_ready(camera, timeout, should_stop):
+    logging.info('Waiting for first camera output: timeout=%ss', timeout)
     deadline = time.monotonic() + timeout
     while not should_stop():
         if camera.stopped_event.is_set():
@@ -88,7 +96,9 @@ def wait_for_camera_ready(camera, timeout, should_stop):
         if remaining <= 0:
             raise TimeoutError('Timed out waiting for the first camera output')
         if camera.ready_event.wait(min(0.1, remaining)) and camera.running():
+            logging.info('Camera output ready')
             return not should_stop()
+    logging.info('Camera readiness wait cancelled by shutdown')
     return False
 
 
@@ -106,6 +116,10 @@ def prepare_tracking_core(vehicle, camera, should_stop):
         notifier.service_ready()
     except Exception:
         logging.exception('Readiness notification failed; movement control continues')
+    try:
+        notifier.start_rc_notifications()
+    except Exception:
+        logging.exception('RC notification setup failed; movement control continues')
     return prepared
 
 
@@ -128,19 +142,25 @@ def main(args):
         if not os.path.exists(logpath):
             os.mkdir(logpath)
 
-    fileCount = len(os.listdir(logpath))
-    logFile = os.path.join(logpath, str(fileCount) + '.log')
+    # Run once per process startup, before opening the current session's log.
+    removed_logs = cleanup_unarmed_logs(logpath)
+    logFile = next_log_path(logpath)
 
     logging.basicConfig(
         level=logging.DEBUG,
-        format="%(asctime)-15s %(levelname)-8s %(message)s",
+        format="%(asctime)-15s %(levelname)-8s %(name)s [%(threadName)s] %(message)s",
         handlers=[
-            logging.FileHandler(logFile),
+            logging.FileHandler(logFile, mode='x'),
             logging.StreamHandler()
         ]
     )
 
     logger = logging.getLogger()
+    logger.info('Flight service starting: pid=%s uri=%s baud=%s log=%s',
+                os.getpid(), args.uri, settings.baud_rate, logFile)
+    logger.info('Removed %d previous logs without an arming attempt', removed_logs)
+    logger.debug('Flight settings: %s', settings)
+    logger.debug('Notification settings: %s', notification_settings)
 
     # messing around with stdout for logging to file
     # this is nasty but whatever
@@ -160,6 +180,7 @@ def main(args):
 
     try:
         if not EXIT:
+            logging.info('Starting tracking camera')
             camera = YoloCamera(camera_callback if videoEnabled else None)
             camera.start()
 
@@ -171,7 +192,10 @@ def main(args):
             else:
                 logging.info("Starting core")
                 logging.info("Connecting to vehicle on: %s" % (args.uri,))
+                connection_started = time.monotonic()
                 vehicle = connect(args.uri, baud=settings.baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20, vehicle_class=FlightControllerVehicle )
+                logging.info('Flight-controller connection ready: elapsed=%.2fs',
+                             time.monotonic() - connection_started)
 
                 # Setup core thread
                 core = prepare_tracking_core(vehicle, camera, lambda: EXIT)
@@ -184,7 +208,11 @@ def main(args):
                     logging.debug('core state is: ' + core.state + ', ' + core.activeRule)
                     time.sleep(1)
 
+    except Exception:
+        logging.exception('Flight service failed')
+        raise
     finally:
+        logging.info('Flight service shutting down')
         stop()
         if vehicle is not None and core is None:
             vehicle.close()
