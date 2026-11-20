@@ -1,7 +1,8 @@
 import time
+import logging
 
 from enum import Enum
-from constants import ALTITUDE, HEARTBEAT_TIMEOUT, ALTITUDE_FUZZINESS
+from config import settings
 
 from commands import setPositionTarget
 from dronekit import Vehicle, VehicleMode
@@ -12,6 +13,8 @@ from rules.none import NoDetectionRule
 from rules.search import SearchRule
 from rules.follow import FollowRule
 from rules.backoff import BackoffRule
+
+logger = logging.getLogger(__name__)
 
 class ExecutionState(str, Enum):
     Init           = "INIT"
@@ -28,13 +31,15 @@ class Core:
     vehicle: Vehicle = None
     camera: BaseCamera = None
     state: ExecutionState = ExecutionState.Init
-    rules: list[BaseRule] = []
 
     activeRule = 'n/a'
 
-    def __init__(self, vehicle: Vehicle, camera: BaseCamera):
+    def __init__(self, vehicle: Vehicle, camera: BaseCamera, notifier=None):
         self.camera = camera
         self.vehicle = vehicle
+        self.notifier = notifier
+        self._notification_error_logged = False
+        self.activeRule = 'n/a'
 
         # Setup vehicle etc
         self.vehicle.add_attribute_listener('mode', self.modeCallback)
@@ -42,10 +47,12 @@ class Core:
         self.vehicle.add_attribute_listener('last_heartbeat', self.lastHeartbeatCallback)
 
         # Setup rules in heirarchy order
-        self.rules.append(BackoffRule(self.vehicle, self.camera))
-        self.rules.append(FollowRule(self.vehicle, self.camera))
-        self.rules.append(SearchRule(self.vehicle, self.camera))
-        self.rules.append(NoDetectionRule(self.vehicle, self.camera))
+        self.rules = [
+            BackoffRule(self.vehicle, self.camera),
+            FollowRule(self.vehicle, self.camera),
+            SearchRule(self.vehicle, self.camera),
+            NoDetectionRule(self.vehicle, self.camera),
+        ]
 
         # Enter ready state
         self.state = ExecutionState.AwaitingArm
@@ -92,10 +99,10 @@ class Core:
 
     def isAltitudeOk(self) -> bool:
         # TODO: This does not account for altitude at current position, only from home
-        return self.vehicle.location.global_relative_frame.alt >= ALTITUDE - ALTITUDE_FUZZINESS
+        return self.vehicle.location.global_relative_frame.alt >= settings.altitude - settings.altitude_fuzziness
 
     def isConnected(self) -> bool:
-        return self.vehicle.last_heartbeat < HEARTBEAT_TIMEOUT
+        return self.vehicle.last_heartbeat < settings.heartbeat_timeout
 
     def armable(self) -> bool:
         return not self.vehicle.armed and \
@@ -104,6 +111,28 @@ class Core:
                 self.camera.running()
 
     #### State machine
+
+    def _rule_command(self):
+        for rule in self.rules:
+            rule.update()
+
+        state = ((0.0, 0.0), 0.0)
+        for rule in self.rules:
+            if rule.isActive():
+                state = rule.getState()
+                self.activeRule = rule.name()
+                break
+
+        if self.notifier is not None:
+            try:
+                # The notifier deduplicates and rate-limits repeated cycles.
+                self.notifier.update_rule(self.activeRule)
+                self._notification_error_logged = False
+            except Exception:
+                if not self._notification_error_logged:
+                    logger.exception('Rule notification failed; movement control continues')
+                    self._notification_error_logged = True
+        return state
 
     def run(self) -> None:
         while not self.state is ExecutionState.Stop:
@@ -137,8 +166,8 @@ class Core:
                 # If state changes happens during the above inner loop
                 if self.state != ExecutionState.Takeoff: continue
 
-                print('Take off to ' + str(ALTITUDE) + 'm')
-                self.vehicle.simple_takeoff(ALTITUDE)
+                print('Take off to ' + str(settings.altitude) + 'm')
+                self.vehicle.simple_takeoff(settings.altitude)
 
                 # Wait until the vehicle reaches altitude
                 self.state = ExecutionState.AwaitingReady
@@ -162,20 +191,8 @@ class Core:
             elif self.state is ExecutionState.Running:
                 # Mode and armed callbacks handle exiting this state.
 
-                # Update each rule with new data
-                for rule in self.rules:
-                    rule.update()
-
-                # Get the highest active rule's output
-                state = ((0.0, 0.0), 0.0)
-                for rule in self.rules:
-                    if rule.isActive():
-                        state = rule.getState()
-                        self.activeRule = rule.name()
-                        break
-
                 # Apply local translation and yaw differential
-                position, yaw = state
+                position, yaw = self._rule_command()
                 setPositionTarget(self.vehicle, position, yaw)
 
                 time.sleep(0.01)

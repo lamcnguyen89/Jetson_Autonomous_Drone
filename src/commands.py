@@ -1,14 +1,7 @@
 from typing import Tuple
 from pymavlink import mavutil
 from dronekit import Vehicle
-from constants import (
-    ALTITUDE,
-    ALTITUDE_VELOCITY_GAIN,
-    FOLLOW_POSITION_DEADBAND,
-    FOLLOW_VELOCITY_GAIN,
-    MAX_VERTICAL_SPEED,
-    SPEED,
-)
+from config import settings
 
 import math
 
@@ -24,40 +17,40 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 
 # Convert forward/right position errors in meters into body-frame velocities.
 # Small errors are ignored to prevent jitter, and the combined horizontal
-# velocity is limited so diagonal movement cannot exceed SPEED.
+# velocity is limited so diagonal movement cannot exceed settings.speed.
 def positionErrorToHorizontalVelocity(
     forwardError: float,
     rightError: float,
 ) -> Tuple[float, float]:
-    if abs(forwardError) <= FOLLOW_POSITION_DEADBAND:
+    if abs(forwardError) <= settings.follow_position_deadband:
         forwardError = 0.0
-    if abs(rightError) <= FOLLOW_POSITION_DEADBAND:
+    if abs(rightError) <= settings.follow_position_deadband:
         rightError = 0.0
 
-    forwardVelocity = forwardError * FOLLOW_VELOCITY_GAIN
-    rightVelocity = rightError * FOLLOW_VELOCITY_GAIN
+    forwardVelocity = forwardError * settings.follow_velocity_gain
+    rightVelocity = rightError * settings.follow_velocity_gain
 
     # Limit total horizontal speed, including diagonal movement.
     magnitude = math.hypot(forwardVelocity, rightVelocity)
-    if magnitude > SPEED:
-        scale = SPEED / magnitude
+    if magnitude > settings.speed:
+        scale = settings.speed / magnitude
         forwardVelocity *= scale
         rightVelocity *= scale
 
     return forwardVelocity, rightVelocity
 
 # Convert home-relative altitude error into an NED vertical velocity.
-# NED is positive downward, so being below ALTITUDE produces a negative
+# NED is positive downward, so being below settings.altitude produces a negative
 # velocity (climb); the result is capped for a controlled correction.
 def altitudeErrorToVerticalVelocity(currentAltitude: float) -> float:
     # MAVLink NED uses positive Z velocity for down and negative for up.
     verticalVelocity = (
-        currentAltitude - ALTITUDE
-    ) * ALTITUDE_VELOCITY_GAIN
+        currentAltitude - settings.altitude
+    ) * settings.altitude_velocity_gain
     return clamp(
         verticalVelocity,
-        -MAX_VERTICAL_SPEED,
-        MAX_VERTICAL_SPEED,
+        -settings.max_vertical_speed,
+        settings.max_vertical_speed,
     )
 
 def setYaw(vehicle: Vehicle, relativeYaw: float) -> None:
@@ -145,7 +138,7 @@ def setLoiterGuided(vehicle: Vehicle, yawRate: float) -> None:
         emptyMask + ignoreAccelMask + ignoreVelocityMask + ignoreYaw, # type_mask (only speeds enabled)
         int(LOITER_POSITION["latitude"] * 1e7), # lat_int - X Position in WGS84 frame in 1e7 * meters
         int(LOITER_POSITION["longitude"] * 1e7), # lon_int - Y Position in WGS84 frame in 1e7 * meters
-        ALTITUDE,
+        settings.altitude,
         0, # X velocity in NED frame in m/s
         0, # Y velocity in NED frame in m/s
         0, # Z velocity in NED frame in m/s
@@ -194,7 +187,7 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
 
         # Find altitude target for NED frame
         currentAltitude = vehicle.location.global_relative_frame.alt
-        targetAltOffset = 0.0 - (ALTITUDE - currentAltitude) # up is negative
+        targetAltOffset = 0.0 - (settings.altitude - currentAltitude) # up is negative
 
         ignoreVelocityMask =  0b111000
         ignoreAccelMask =  0b111000000
@@ -228,8 +221,8 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
         IS_LOITER = False
 
         # Velocities for horizontal movement
-        velocityNorth = max(-SPEED, min(SPEED, localNorth * 0.5))
-        velocityEast = max(-SPEED, min(SPEED, localEast * 0.5))
+        velocityNorth = max(-settings.speed, min(settings.speed, localNorth * 0.5))
+        velocityEast = max(-settings.speed, min(settings.speed, localEast * 0.5))
         
         # Type mask: ignore XY position, use Z position, ignore velocityZ, ignore accel, ignore yaw
         type_mask = 0b0111000111  # Binary: ignore pos XY, vel Z, accel XYZ, yaw
@@ -239,7 +232,7 @@ def setPositionTarget(vehicle: Vehicle, position: Tuple[float, float], yawRate: 
             0, 0, 0,
             mavutil.mavlink.MAV_FRAME_LOCAL_NED,  # Local frame from home
             type_mask,
-            0, 0, -ALTITUDE,  # Position: X,Y ignored, Z is altitude (negative = up in NED)
+            0, 0, -settings.altitude,  # Position: X,Y ignored, Z is altitude (negative = up in NED)
             velocityNorth, velocityEast, 0,  # Velocities: XY used, Z ignored
             0, 0, 0,
             0, math.radians(yawRate))

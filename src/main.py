@@ -7,10 +7,15 @@ import os
 if platform.machine() == 'aarch64':  # Jetson
     os.environ['OPENBLAS_CORETYPE'] = "ARMV8"
 
+from dronekit_compat import apply_dronekit_compatibility
+apply_dronekit_compatibility()
+
 from dronekit import connect, Vehicle
+from config import settings, notification_settings
 from core import Core
 from camera.yolocam import YoloCamera
 from filtered_vehicle import FlightControllerVehicle
+from notifications import Notifier
 
 import argparse
 import time
@@ -27,9 +32,6 @@ core: Core         = None
 camera: YoloCamera = None
 vehicle: Vehicle   = None
 videoWriter        = None
-
-# Set the baud rate for the connection to the vehicle. Since I have an older Pixhawk, I have to use 57600. If you have a newer flight controller, you can try 115200.
-baud_rate = 57600
 
 # See: https://stackoverflow.com/a/66209331
 class LoggerWriter:
@@ -75,6 +77,37 @@ def stop():
 
 def signal_handler(sig, frame):
     stop()
+
+
+def wait_for_camera_ready(camera, timeout, should_stop):
+    deadline = time.monotonic() + timeout
+    while not should_stop():
+        if camera.stopped_event.is_set():
+            raise RuntimeError('Camera stopped before the tracking service became ready') from camera.error
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Timed out waiting for the first camera output')
+        if camera.ready_event.wait(min(0.1, remaining)) and camera.running():
+            return not should_stop()
+    return False
+
+
+def prepare_tracking_core(vehicle, camera, should_stop):
+    if not wait_for_camera_ready(camera, notification_settings.camera_ready_timeout, should_stop):
+        return None
+    if (vehicle._trusted_fc_system_id is None
+            or vehicle.last_heartbeat >= settings.heartbeat_timeout):
+        raise RuntimeError('Flight-controller connection is not ready')
+    notifier = Notifier(vehicle)
+    prepared = Core(vehicle, camera, notifier=notifier)
+    if should_stop():
+        return None
+    try:
+        notifier.service_ready()
+    except Exception:
+        logging.exception('Readiness notification failed; movement control continues')
+    return prepared
+
 
 def main(args):
     global EXIT, core, camera, vehicle, videoWriter
@@ -125,36 +158,40 @@ def main(args):
             fileCount = len(os.listdir(args.video_path))
             videoWriter = cv2.VideoWriter(os.path.join(args.video_path, str(fileCount) + '.mkv'), cv2.VideoWriter_fourcc('M','J','P','G'), 30, YoloCamera.previewSize())
 
-    if not EXIT:
-        camera = YoloCamera(camera_callback if videoEnabled else None)
-        camera.start()
+    try:
+        if not EXIT:
+            camera = YoloCamera(camera_callback if videoEnabled else None)
+            camera.start()
 
-        logging.info('Searching for killswitch at: ' + args.killswitch_path)
-        if os.path.exists(args.killswitch_path):
-            logging.warning("Killswitch engaged, preventing core run")
-            while not EXIT:
-                time.sleep(1)
-        else:
-            logging.info("Starting core")
-            logging.info("Connecting to vehicle on: %s" % (args.uri,))
-            vehicle = connect(args.uri, baud=baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20, vehicle_class=FlightControllerVehicle )
+            logging.info('Searching for killswitch at: ' + args.killswitch_path)
+            if os.path.exists(args.killswitch_path):
+                logging.warning("Killswitch engaged, preventing core run")
+                while not EXIT:
+                    time.sleep(1)
+            else:
+                logging.info("Starting core")
+                logging.info("Connecting to vehicle on: %s" % (args.uri,))
+                vehicle = connect(args.uri, baud=settings.baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20, vehicle_class=FlightControllerVehicle )
 
-            # Setup core thread
-            core = Core(vehicle, camera)
-            thread = threading.Thread(target=core_thread, args=(core,))
-            thread.start()
+                # Setup core thread
+                core = prepare_tracking_core(vehicle, camera, lambda: EXIT)
+                if core is None:
+                    return
+                thread = threading.Thread(target=core_thread, args=(core,))
+                thread.start()
 
-            while not EXIT:
-                logging.debug('core state is: ' + core.state + ', ' + core.activeRule)
-                time.sleep(1)
+                while not EXIT:
+                    logging.debug('core state is: ' + core.state + ', ' + core.activeRule)
+                    time.sleep(1)
 
-    # Signal handler will set the value of EXIT
-
-    if thread:
-        thread.join(5)
-
-    if videoWriter:
-        videoWriter.release()
+    finally:
+        stop()
+        if vehicle is not None and core is None:
+            vehicle.close()
+        if thread:
+            thread.join(5)
+        if videoWriter:
+            videoWriter.release()
 
     logging.info('Thank you for flying Matchstic Air. We wish you a pleasant onward journey.')
 

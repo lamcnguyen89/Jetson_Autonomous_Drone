@@ -1,77 +1,19 @@
-import pytest
 import time
 import threading
 import json
-import os
-import platform
-import sys
-
 from typing import Tuple
 
-from .dronekit_compat import apply_dronekit_compatibility
+from src.dronekit_compat import apply_dronekit_compatibility
 apply_dronekit_compatibility()
 
-from dronekit import connect
-from dronekit import Vehicle
+from dronekit import connect, Vehicle
 from dronekit_sitl import SITL
-
-sys.path.insert(0, './src')
-
 from core import Core, ExecutionState
-from camera.mock import MockCamera
+from .mock_camera import MockCamera
 from .uiconnection import UIConnection
+from .paths import DEFAULTS_FILE, sitl_binary_path
 
 ACTIVE_THREADS = []
-
-SITL_BINARIES_BY_SYSTEM = {
-    "Darwin": ("arducopter",),
-    "Linux": ("arducopter-linux", "arducopter"),
-}
-
-def is_linux_binary(path: str) -> bool:
-    with open(path, "rb") as binary:
-        return binary.read(4) == b"\x7fELF"
-
-def sitl_binary_path() -> str:
-    override_path = os.environ.get("ARDUPILOT_SITL_BINARY")
-    if override_path:
-        return os.path.abspath(override_path)
-
-    system = platform.system()
-    binary_names = SITL_BINARIES_BY_SYSTEM.get(system)
-    if binary_names is None:
-        supported_systems = ", ".join(sorted(SITL_BINARIES_BY_SYSTEM.keys()))
-        raise RuntimeError(
-            f"No default ArduPilot SITL binary is configured for {system}. "
-            f"Set ARDUPILOT_SITL_BINARY to your arducopter executable. "
-            f"Configured systems: {supported_systems}."
-        )
-
-    existing_paths = [
-        os.path.abspath(os.path.join(".dronekit", binary_name))
-        for binary_name in binary_names
-        if os.path.exists(os.path.join(".dronekit", binary_name))
-    ]
-    for path in existing_paths:
-        if system != "Linux" or is_linux_binary(path):
-            return path
-
-    expected_paths = ", ".join(
-        os.path.abspath(os.path.join(".dronekit", binary_name))
-        for binary_name in binary_names
-    )
-    raise FileNotFoundError(
-        f"No usable ArduPilot SITL binary found for {system}. "
-        f"Expected one of: {expected_paths}. "
-        f"Add a Linux arducopter build there, or set ARDUPILOT_SITL_BINARY "
-        f"to the path of your Linux arducopter executable."
-    )
-
-@pytest.fixture
-def environment():
-    [core, vehicle, camera, sitl, ui] = prepareForTest()
-    yield (vehicle, camera, core)
-    shutdownAfterTest(sitl, core, camera, ui)
 
 def core_thread(core):
     print('running core thread...')
@@ -139,9 +81,7 @@ def prepareForTest(timeout = True, verbose=False) -> Tuple[Core, Vehicle, MockCa
 
     print('start fixture')
 
-    HOME = '-35.363261,149.165230,584,353'
-
-    sitl = SITL(path=sitl_binary_path(), defaults_filepath=os.path.abspath('./.dronekit/copter-hexa.parm'))
+    sitl = SITL(path=sitl_binary_path(), defaults_filepath=str(DEFAULTS_FILE))
     sitl_args = ['--model', 'hexa']
     sitl.launch(sitl_args, await_ready=True, restart=False, verbose=verbose)
 
@@ -220,3 +160,4 @@ def shutdownAfterTest(sitl, core: Core, camera: MockCamera, ui: UIConnection):
 
     for thread in ACTIVE_THREADS:
         thread.join()
+

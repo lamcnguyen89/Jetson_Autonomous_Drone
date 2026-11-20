@@ -4,7 +4,7 @@ import math
 
 from core import Core
 from typing import Tuple
-from camera.mock import MockCamera
+from simulation.mock_camera import MockCamera
 from dronekit import Vehicle
 
 RADIUS_OF_EARTH = 6378100.0  # in meters

@@ -7,12 +7,25 @@ import numpy as np
 import time
 import cv2
 import threading
+import logging
 
-from constants import DETECTION_THRESH
+from config import settings
 
 THREAD_STOP = False
 BLOB_PATH   = str((Path(__file__).parent / Path('../../models/yolo-v4-tiny-tf_openvino_2021.4_6shave.blob')).resolve().absolute())
 RUNNING     = False
+logger = logging.getLogger(__name__)
+
+
+def _get_packet(queue):
+    # Poll so startup cancellation or a readiness timeout can stop an idle
+    # pipeline; a blocking get() could otherwise keep the camera thread alive.
+    while not THREAD_STOP:
+        packet = queue.tryGet()
+        if packet is not None:
+            return packet
+        time.sleep(0.01)
+    return None
 
 def thread(callback, _pipeline, outputFrames):
     global THREAD_STOP, RUNNING
@@ -35,8 +48,10 @@ def thread(callback, _pipeline, outputFrames):
         RUNNING = True
 
         while THREAD_STOP == False:
-            inPreview = previewQueue.get()
-            inDet = detectionNNQueue.get()
+            inPreview = _get_packet(previewQueue)
+            inDet = _get_packet(detectionNNQueue)
+            if inPreview is None or inDet is None:
+                break
 
             frame = None
 
@@ -117,6 +132,11 @@ class YoloCamera(BaseCamera):
         return (416, 416)
 
     def __init__(self, callback = None):
+        self.ready_event = threading.Event()
+        self.stopped_event = threading.Event()
+        self.error = None
+        self._detections = []
+        self._thread = None
         self.setup()
         self._userCallback = callback
 
@@ -152,7 +172,7 @@ class YoloCamera(BaseCamera):
         self._stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
 
         self._spatialDetectionNetwork.setBlobPath(BLOB_PATH)
-        self._spatialDetectionNetwork.setConfidenceThreshold(DETECTION_THRESH)
+        self._spatialDetectionNetwork.setConfidenceThreshold(settings.detection_thresh)
         self._spatialDetectionNetwork.input.setBlocking(False)
         self._spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
         self._spatialDetectionNetwork.setDepthLowerThreshold(250)
@@ -178,20 +198,47 @@ class YoloCamera(BaseCamera):
     def running(self):
         global RUNNING
 
-        return RUNNING
+        return RUNNING and not THREAD_STOP
 
     def start(self):
-        self._thread = threading.Thread(target=thread, args=(self._callback, self._pipeline, self._userCallback != None))
+        global THREAD_STOP, RUNNING
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError('Camera is already running')
+        THREAD_STOP = False
+        RUNNING = False
+        self.ready_event.clear()
+        self.stopped_event.clear()
+        self.error = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def _run(self):
+        global RUNNING
+        try:
+            thread(self._callback, self._pipeline, self._userCallback is not None)
+        except Exception as error:
+            self.error = error
+            logger.exception('Camera pipeline failed')
+        finally:
+            RUNNING = False
+            self.ready_event.clear()
+            self.stopped_event.set()
 
     def stop(self):
         global THREAD_STOP
         THREAD_STOP = True
-
-        self._thread.join(5)
+        self.ready_event.clear()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(5)
+            if self._thread.is_alive():
+                logger.warning('Camera thread did not stop within five seconds')
 
     def _callback(self, detections, frame):
+        if THREAD_STOP:
+            return
         self._detections = detections
+        # An empty batch still proves the pipeline is producing output.
+        self.ready_event.set()
 
         if self._userCallback != None:
             self._userCallback(detections, frame)

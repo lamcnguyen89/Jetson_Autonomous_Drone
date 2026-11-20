@@ -1,6 +1,6 @@
 from .base import BaseRule
 import enum
-from constants import YAW_RATE
+from config import settings
 
 class Direction(enum.Enum):
     NONE  = -1
@@ -35,7 +35,7 @@ class SearchRule(BaseRule):
         if self.personDirection is Direction.NONE:
             self._targetYaw = 0.0
         else:
-            self._targetYaw = float((0.0 - YAW_RATE) if self.personDirection is Direction.LEFT else YAW_RATE)
+            self._targetYaw = float((0.0 - settings.yaw_rate) if self.personDirection is Direction.LEFT else settings.yaw_rate)
 
     def reset(self):
         super().reset()

@@ -1,0 +1,2 @@
+# Allow the service's dialout group to access Luxonis/Movidius USB devices.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", GROUP="dialout", MODE="0660"

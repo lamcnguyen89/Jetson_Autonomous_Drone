@@ -1,6 +1,6 @@
 from .base import BaseRule
 import math
-from constants import MINIMUM_DISTANCE, YAW_RATE
+from config import settings
 
 class FollowRule(BaseRule):
     '''
@@ -20,13 +20,13 @@ class FollowRule(BaseRule):
 
         invertYaw = xDistance < 0
 
-        yawRate = (math.pow(xDistance, 2) / 4.0) * YAW_RATE * (-1 if invertYaw else 1)
-        if yawRate < -YAW_RATE:
-            yawRate = -YAW_RATE
-        if yawRate > YAW_RATE:
-            yawRate = YAW_RATE
+        yawRate = (math.pow(xDistance, 2) / 4.0) * settings.yaw_rate * (-1 if invertYaw else 1)
+        if yawRate < -settings.yaw_rate:
+            yawRate = -settings.yaw_rate
+        if yawRate > settings.yaw_rate:
+            yawRate = settings.yaw_rate
 
-        self._targetPosition = (zDistance - MINIMUM_DISTANCE, xDistance)
+        self._targetPosition = (zDistance - settings.minimum_distance, xDistance)
         self._targetYaw = yawRate
 
     def headingChange(self, xDistance, zDistance):

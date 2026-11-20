@@ -1,6 +1,6 @@
-from .base import BaseCamera
-from .detection import Detection
-from src.constants import MOCK_FOV, RADIUS_OF_EARTH, MOCK_Z_MAX, MOCK_FPS
+from camera.base import BaseCamera
+from camera.detection import Detection
+from .constants import MOCK_FOV, RADIUS_OF_EARTH, MOCK_Z_MAX, MOCK_FPS
 
 import gpxpy
 from gpxpy.gpx import GPXTrackPoint

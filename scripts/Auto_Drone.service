@@ -1,0 +1,16 @@
+[Unit]
+Description=Autodrone follow-me startup script
+After=network.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+SupplementaryGroups=dialout
+EnvironmentFile=@PROJECT_ROOT@/.env
+WorkingDirectory=@PROJECT_ROOT@
+ExecStart=/usr/bin/env .venv/bin/python -u src/main.py --uri "${MAVLINK_PORT}" --video
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

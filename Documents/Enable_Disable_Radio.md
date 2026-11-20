@@ -1,7 +1,7 @@
 # ubuntu turn off wifi and bluetooth command line
 
 
-## Why disable Wifi a Bluetooth
+## Why disable Wifi and Bluetooth
 
 For the Jetson mounted to the drone, the reason to disable the wifi and bluetooth is that these radio signals might cause interference with the Video, GPS, and RC signals transmitted from the drone to the pilot. With the commands below you can enable and disable Jetson TX.
 

@@ -1,5 +1,5 @@
 from .base import BaseRule
-from constants import BACKOFF_DISTANCE, MINIMUM_DISTANCE
+from config import settings
 
 class BackoffRule(BaseRule):
     '''
@@ -8,7 +8,7 @@ class BackoffRule(BaseRule):
 
     def isActive(self):
         return self.camera.closestDetection() != None and \
-            self.camera.closestDetection().z < BACKOFF_DISTANCE
+            self.camera.closestDetection().z < settings.backoff_distance
 
     def update(self):
         detection = self.camera.closestDetection()
@@ -18,7 +18,7 @@ class BackoffRule(BaseRule):
         xDistance = detection.x
         zDistance = detection.z
 
-        self._targetPosition = (zDistance - MINIMUM_DISTANCE, xDistance)
+        self._targetPosition = (zDistance - settings.minimum_distance, xDistance)
 
     def name(self) -> str:
         return 'backoff'

@@ -10,15 +10,18 @@ The full project is intended to run on an NVIDIA Jetson Nano, but should work on
 - INFO: This project is very much work-in-progress. It should be functional, but be prepared to dive into the code to fix things.
 - **WARNING**: I take no responsibility if you run any of this code on your own drone. You do so at your own risk.
 
+> Historical setup notes. For current installation instructions, see
+> [the project README](../README.md) and [the simulation guide](../simulation/README.md).
+
 ### Getting Started
 
 I went through the process here to setup my own drone: https://docs.luxonis.com/en/latest/pages/tutorials/first_steps/
 
 - run `./setup.sh` to install dependencies
 - `python utils/camera.py` is for debugging Yolo detections and FPS
-- `./integration.sh` to run SITL integration tests
-- `python sitl.py` to run virtualised SITL mode with direct person control
-- `cd visualiser && yarn serve` to run the SITL frontend
+- `./simulation/integration.sh` to run SITL integration tests
+- `.venv/bin/python -m simulation.sitl` to run virtualised SITL mode with direct person control
+- `cd simulation/visualiser && yarn serve` to run the SITL frontend
 - `python src/main.py` to run the full system - see the help it logs with `-h`
 
 ### Testing (SITL)
@@ -28,7 +31,7 @@ A full SITL environment is used for testing, and I have built a visualisation to
 To use this visualiser, you should open two terminal windows. In the first, run:
 
 ```bash
-cd visualiser
+cd simulation/visualiser
 yarn install
 yarn serve
 ```
@@ -38,12 +41,12 @@ This will start the visualiser UI, which will be available on `localhost:8080`. 
 Then, in the other terminal window, run 
 
 ```bash
-python sitl.py
+.venv/bin/python -m simulation.sitl
 ```
 
 This will then start the backend. If the frontend UI doesn't connect automatically, hit refresh in your browser. Data should eventually start coming through - there likely will be a delay before it starts.
 
-Please note: the compiled version of ArduPilot 4.1 (`.dronekit/arducopter`) is for macOS. You will likely need to change `sitl.py` to use one for Windows or Linux as required.
+Please note: the compiled version of ArduPilot 4.1 (`simulation/ardupilot/arducopter`) is for macOS. You will likely need to change `simulation/sitl.py` to use one for Windows or Linux as required.
 
 ### Testing (integration tests)
 

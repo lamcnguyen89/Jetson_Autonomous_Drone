@@ -1,0 +1,6 @@
+-r ../requirements.txt
+dronekit-sitl==3.3.0
+gpxpy==1.6.2
+# uiconnection.py uses the legacy two-argument connection handler.
+websockets==13.1
+pytest==8.4.2
