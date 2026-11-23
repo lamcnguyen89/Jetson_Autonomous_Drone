@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "jetson-autonomous-drone",
+  "name": "Jetson Autonomous Drone",
+  "profiles": [
+    {
+      "id": "auto-drone",
+      "name": "Auto Drone",
+      "installer": "scripts/Install_Auto_Drone.sh",
+      "exclusive_group": "drone-runtime",
+      "services": [
+        "Auto_Drone.service"
+      ]
+    }
+  ]
+}
