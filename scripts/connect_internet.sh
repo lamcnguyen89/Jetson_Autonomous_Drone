@@ -1,6 +1,43 @@
 #!/usr/bin/env bash
-# The purpose of this file is to restore Wi-Fi and automatic time synchronization after running the drone services.
-# Automatic Time Synchronization has to be turned off when no internet is available because it crashes the drone setup otherwise
+# Restore Wi-Fi and automatic time synchronization after offline operation.
+
+load_wifi_settings() {
+    local settings
+    [[ -f "$project_root/.env" ]] || {
+        echo "Missing $project_root/.env; copy .env.example to .env and configure Wi-Fi." >&2
+        return 1
+    }
+    settings=$(
+        # Like the installer, source trusted, literal project configuration.
+        # Use a subshell so unrelated settings stay out of the caller's shell.
+        source "$project_root/.env" || exit 1
+        # Python's standard library handles the JSON array, including spaces in
+        # profile names. No project imports or virtual environment are needed.
+        python3 - "${WIFI_CONNECTIONS:-}" "${WIFI_CONNECT_TIMEOUT:-90}" <<'PY'
+import json
+import re
+import sys
+
+try:
+    profiles = json.loads(sys.argv[1])
+except ValueError:
+    raise SystemExit('WIFI_CONNECTIONS must be a JSON array of saved profile names.')
+if (not isinstance(profiles, list) or not profiles
+        or any(not isinstance(p, str) or not p.strip()
+               or any(c in p for c in '\r\n\0') for p in profiles)):
+    raise SystemExit('WIFI_CONNECTIONS must be a nonempty JSON array of saved profile names.')
+timeout = sys.argv[2]
+if not re.fullmatch(r'[1-9][0-9]*', timeout):
+    raise SystemExit('WIFI_CONNECT_TIMEOUT must be a positive integer.')
+print(timeout)
+print('\n'.join(profiles))
+PY
+    ) || return 1
+    local -a values
+    mapfile -t values <<< "$settings"
+    CONNECT_TIMEOUT=${values[0]}
+    WIFI_CONNECTIONS=("${values[@]:1}")
+}
 
 wifi_network_is_connected() {
     local ssid active_uuids uuid active_ssid state
@@ -18,20 +55,6 @@ wifi_network_is_connected() {
 }
 
 connect_wifi() {
-    local command
-    for command in nmcli rfkill; do
-        command -v "$command" >/dev/null || {
-            echo "Required command is missing: $command" >&2
-            return 1
-        }
-    done
-    [[ -t 0 ]] || {
-        echo "Run in a terminal for Wi-Fi credential prompts." >&2
-        return 1
-    }
-    local settings
-    settings=$(python3 "$project_root/config/project_config.py" --shell wifi) || return 1
-    eval "$settings"
     local network key_mgmt identity
     # Unblock every Wi-Fi radio, including USB adapters, before enabling NetworkManager.
     # A physical (hard) radio block still requires the device's switch or firmware.
@@ -83,12 +106,18 @@ main() {
 
     (( EUID == 0 )) || { echo "Run this script with sudo." >&2; exit 1; }
     local command
-    for command in nmcli rfkill timedatectl; do
+    for command in nmcli rfkill timedatectl python3; do
         command -v "$command" >/dev/null || {
             echo "Required command is missing: $command" >&2
             exit 1
         }
     done
+    [[ -t 0 ]] || {
+        echo "Run in a terminal for Wi-Fi credential prompts." >&2
+        exit 1
+    }
+    # Reject invalid configuration before changing NTP or radio state.
+    load_wifi_settings
 
     echo "Enabling automatic time synchronization (NTP)..."
     timedatectl set-ntp true

@@ -118,6 +118,35 @@ See [simulation/README.md](simulation/README.md) for the layout, frontend comman
 and running tools from other directories. The flight service continues to use
 `src/main.py`.
 
+## Manual Wi-Fi and time synchronization
+
+Configure `WIFI_CONNECTIONS` in the root `.env` as a single-quoted JSON array
+of saved NetworkManager profile names in priority order. List saved profiles
+with `nmcli connection show`; profile names may differ from Wi-Fi SSIDs.
+`WIFI_CONNECT_TIMEOUT` is a positive integer in seconds per connection attempt
+(defaults to 90 when omitted).
+
+```bash
+sudo bash scripts/connect_internet.sh
+sudo bash scripts/disable_internet.sh
+```
+
+The connect script reads the trusted `.env` directly, validates the Wi-Fi
+settings, enables NTP and Wi-Fi, and tries each saved profile. Run it in a
+terminal so NetworkManager can prompt for missing credentials. It needs system
+`python3`, `nmcli`, `rfkill`, and `timedatectl`; no project virtual environment
+is needed. The disable script needs no env settings: it disables NTP and blocks
+all Wi-Fi radios, leaving Ethernet unchanged. It also requires `timeout`.
+Disconnecting Wi-Fi ends SSH sessions using that connection.
+
+These are manual helpers. `Auto_Drone.service` does not invoke them or manage
+clock synchronization at boot. The copied `CLOCK_SYNC_MODE`,
+`CLOCK_SYNC_TIMEOUT`, `CLOCK_PREP_WIFI_TIMEOUT`, and `CLOCK_PREP_SYNC_TIMEOUT`
+settings were unused and have been removed. Enabling NTP requests time
+synchronization; the connect script does not wait for synchronization to finish.
+Run these helpers while the drone application is stopped to avoid changing host
+time during a session.
+
 ## Flight configuration
 
 Edit the flight settings in the project root `.env`. All 13 values formerly in
