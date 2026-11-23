@@ -19,7 +19,7 @@ from dronekit_compat import apply_dronekit_compatibility
 apply_dronekit_compatibility()
 
 from dronekit import connect, Vehicle
-from config import settings, notification_settings, inference_settings
+from config import settings, notification_settings, inference_settings, refresh_flight_parameter_defaults
 from core import Core
 from camera.base import BaseCamera
 from camera.factory import create_camera, camera_class
@@ -180,6 +180,11 @@ def main(args):
     logger.debug('Flight settings: %s', settings)
     logger.debug('Notification settings: %s', notification_settings)
     logger.info('Inference configuration: %s', inference_settings)
+
+    # Publish only numeric fallback values for the external WebUI, before any
+    # camera or flight-controller startup. Keep generated metadata out of tuning.
+    refresh_flight_parameter_defaults()
+    logger.info('Refreshed flight parameter display defaults')
 
     # Capture print-based messages from existing components in the same session log.
     sys.stdout = LoggerWriter(logger.info)

@@ -12,7 +12,7 @@ explain the less obvious choices at each step.
 | Start here | Responsibility and connection to the next layer |
 | --- | --- |
 | [src/main.py](src/main.py) | Assembles the service, waits for readiness, and starts camera/control workers. |
-| [src/config.py](src/config.py) | Reads `.env` into immutable settings, including backend selection. |
+| [src/config.py](src/config.py) | Reads `.env` and flight JSON overrides into immutable settings, including backend selection. |
 | [src/camera/factory.py](src/camera/factory.py) | Chooses the camera adapter at startup. |
 | [src/camera/runtime.py](src/camera/runtime.py) | Publishes batches and enforces capture-age freshness for both real backends. |
 | [src/core.py](src/core.py) and [src/rules/base.py](src/rules/base.py) | Separate flight lifecycle from priority-ordered backoff/follow/search/hold decisions. |
@@ -150,10 +150,11 @@ time during a session.
 
 ## Flight configuration
 
-Edit the flight settings in the project root `.env`. All 13 values formerly in
-`src/constants.py` are now documented in `.env.example`, with the original values
-preserved. There are no numeric defaults hidden in Python code.
-The serial baud rate formerly in `src/main.py` is configured here as well.
+Use [src/flight_parameters.json](src/flight_parameters.json) for flight tuning,
+including changes made by a separate WebUI backend. Keep the project root `.env`
+as the trusted defaults and machine configuration. All 13 tuning values are
+documented in `.env.example`; there are no numeric defaults hidden in Python.
+The serial baud rate is configured only through `.env` or the process environment.
 
 | Settings | Meaning |
 | --- | --- |
@@ -174,6 +175,70 @@ work from other directories. Explicit process environment variables override
 file values; systemd already passes the same file through `EnvironmentFile=`.
 The loader does not modify the process environment or interpolate `$variables`.
 
+Flight parameters are read from `src/flight_parameters.json` at startup, with
+precedence **JSON override > process environment > .env**. The JSON path is also
+absolute and independent of the working directory. This applies to the real
+flight service and SITL. The supplied JSON lists every editable parameter as
+`null`, preserving the existing defaults until you enter a value. For example:
+
+```json
+{
+  "ALTITUDE": 3.0,
+  "SPEED": 0.5,
+  "YAW_RATE": "",
+  "defaults": {
+    "ALTITUDE": 2.0,
+    "SPEED": 1.0,
+    "YAW_RATE": 25.0
+  }
+}
+```
+
+Use JSON numbers for overrides. `null`, an empty string (`""`), a whitespace-only
+string, or an omitted key uses the existing environment/.env default for that
+parameter. Saving `{}`, an empty file, or removing the file resets all overrides.
+Zero is an actual value and must satisfy that parameter's validation rules.
+Nonblank strings (including `"0.5"`), booleans, duplicate keys, malformed JSON,
+and unsupported keys cause a configuration error. The entire object must be
+valid; invalid overrides do not silently fall back to defaults.
+
+At each flight-service startup, before opening the camera or connecting to the
+controller, the service refreshes the `defaults` object with all 13 numeric
+fallback values. These come from `.env` plus process-environment overrides, so
+they match the values used when a tuning field is blank. Existing top-level
+overrides are preserved. The example above abbreviates the generated defaults;
+the actual file contains all 13. A missing or empty file is recreated with blank
+override fields and the current defaults. Updating `.env` refreshes these display
+values on the next service restart. Ordinary settings reads, imports, and
+`--help` do not write the JSON file.
+
+The WebUI can read `defaults.ALTITUDE`, for example, to show the altitude default,
+and edit top-level `ALTITUDE` to set an override. Treat `defaults` as generated,
+read-only display metadata: the flight code ignores its values, even if changed,
+and replaces the entire object at the next service startup. Only allowed flight
+defaults are exported; machine settings and other `.env` contents are excluded.
+The displayed default is the fallback, not necessarily the running value when
+an override is set. Saved override changes still require a service restart.
+
+Only the 13 tuning keys in the table above are editable through JSON; `BAUD_RATE`
+is excluded. Machine settings, inference selection, and notifications cannot be
+overridden through this file. `YAW_MAX_DAMP` remains accepted for compatibility
+but is currently unused by the movement rules.
+
+The WebUI implementation lives separately. Its backend should use a fixed path
+to this JSON file, validate the merged settings before saving, and never expose
+a general file-writing endpoint or write `.env`. Filesystem isolation requires
+a separate WebUI account with write access limited to the JSON file; do not
+grant it write access to `.env`, the repository root, or the `src` directory.
+If using atomic replacement, use a trusted writer with narrowly scoped authority
+to replace only this file rather than giving the WebUI write access to `src`.
+This repository change does not configure the separate WebUI's account or permissions.
+The flight-service account needs write access to `src` to publish the JSON file
+atomically. Existing file ownership and access metadata are preserved. Serialize
+WebUI saves with service restarts so two writers do not overwrite one another's
+updates. A defaults-publication error prevents hardware startup and is reported
+as a configuration error.
+
 Settings are converted to finite numbers and checked at startup. Missing,
 nonnumeric or negative values cause an error. `BAUD_RATE` must be a positive
 integer. Altitude, following distance and
@@ -181,8 +246,9 @@ heartbeat timeout must be positive; altitude tolerance must be below the target
 altitude, the backoff trigger must not exceed the following distance, and
 detection confidence must be between 0 and 1.
 
-The shared settings object is immutable for the process lifetime. After changing
-flight values, restart the application, SITL backend, or service:
+The shared settings object is immutable for the process lifetime. After saving
+flight overrides or changing defaults, restart the application, SITL backend,
+or service while disarmed:
 
 ```bash
 sudo systemctl restart Auto_Drone.service

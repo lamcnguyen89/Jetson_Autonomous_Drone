@@ -128,6 +128,7 @@ def test_rc_setup_error_does_not_prevent_core_start(camera, startup, monkeypatch
 @pytest.fixture
 def main_runtime(tmp_path, monkeypatch):
     import sys
+    monkeypatch.setattr('config.FLIGHT_PARAMETERS_FILE', tmp_path / 'flight_parameters.json')
     # Restore pytest's streams after main's legacy stdout/stderr redirection.
     monkeypatch.setattr(sys, 'stdout', sys.stdout)
     monkeypatch.setattr(sys, 'stderr', sys.stderr)
@@ -184,6 +185,28 @@ def test_main_prepares_notifications_before_starting_control_thread(main_runtime
     app.main(args)
     assert events.index('ready') < events.index('core-start')
     assert 'core-stop' in events and 'camera-stop' in events
+
+
+def test_main_publishes_defaults_before_starting_camera(main_runtime, monkeypatch):
+    import json
+    from pathlib import Path
+    from config import EDITABLE_FLIGHT_KEYS
+
+    args, events, camera, _ = main_runtime
+    path = Path(args.log_path) / 'flight_parameters.json'
+    path.write_text('{"SPEED": 0.4, "defaults": {"SPEED": 999}}')
+
+    def start():
+        document = json.loads(path.read_text())
+        assert document['SPEED'] == 0.4
+        assert document['defaults']['SPEED'] != 999
+        assert set(document['defaults']) == EDITABLE_FLIGHT_KEYS
+        events.append('camera-start')
+
+    monkeypatch.setattr(camera, 'start', start)
+    Path(args.killswitch_path).touch()
+    app.main(args)
+    assert events == ['camera-start', 'camera-stop']
 
 
 def test_main_cleans_logs_once_before_opening_log_and_connecting(main_runtime, monkeypatch):

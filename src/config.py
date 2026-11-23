@@ -1,21 +1,35 @@
-"""Typed, immutable settings read once from the project-root .env at startup.
+"""Typed, immutable settings read once at startup.
 
 Flight tuning, notifications and inference selection have separate settings
 objects so each component receives the values relevant to its responsibility.
-Environment variables override file values, matching systemd deployments.
-Runtime code reads these snapshots; editing .env takes effect after restart.
+Environment variables override .env values, matching systemd deployments.
+Flight-only JSON overrides take precedence; blank values retain env defaults.
+Runtime code reads these snapshots; edits take effect after restart.
 """
 
 from dataclasses import dataclass, fields
+import json
 import math
 import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Mapping, Optional
 
 from dotenv import dotenv_values
 
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+FLIGHT_PARAMETERS_FILE = Path(__file__).resolve().parent / "flight_parameters.json"
+
+# Keep machine settings, notifications, and inference selection outside the
+# WebUI-editable contract. New FlightSettings fields are not exposed implicitly.
+EDITABLE_FLIGHT_KEYS = frozenset({
+    "ALTITUDE", "ALTITUDE_FUZZINESS", "MINIMUM_DISTANCE", "BACKOFF_DISTANCE",
+    "HEARTBEAT_TIMEOUT", "YAW_RATE", "YAW_MAX_DAMP", "SPEED",
+    "FOLLOW_VELOCITY_GAIN", "FOLLOW_POSITION_DEADBAND",
+    "ALTITUDE_VELOCITY_GAIN", "MAX_VERTICAL_SPEED", "DETECTION_THRESH",
+})
 
 
 class ConfigurationError(ValueError):
@@ -67,12 +81,73 @@ def _read_values(env_file, environ):
     return values
 
 
+def _unique_json_object(pairs):
+    values = {}
+    for key, value in pairs:
+        if key in values:
+            raise ConfigurationError(f"Duplicate flight setting: {key}")
+        values[key] = value
+    return values
+
+
+def _read_flight_document(path):
+    """Read overrides and generated display metadata without writing the file."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as error:
+        raise ConfigurationError(f"Cannot read {path}: {error}") from error
+
+    if not text.strip():
+        return {}
+    try:
+        overrides = json.loads(text, object_pairs_hook=_unique_json_object)
+    except ValueError as error:
+        raise ConfigurationError(f"Invalid flight overrides in {path}: {error}") from error
+    if not isinstance(overrides, dict):
+        raise ConfigurationError(f"{path} must contain a JSON object")
+    unknown = set(overrides) - EDITABLE_FLIGHT_KEYS - {'defaults'}
+    if unknown:
+        raise ConfigurationError(f"Unsupported flight settings in {path}: {', '.join(sorted(unknown))}")
+    if 'defaults' in overrides and not isinstance(overrides['defaults'], dict):
+        raise ConfigurationError(f"defaults in {path} must be a JSON object")
+    return overrides
+
+
+def _flight_override_values(document, path):
+    """Ignore display defaults; only top-level tuning keys have authority."""
+    values = {}
+    for key, value in document.items():
+        if key == 'defaults':
+            continue
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        # bool is an int subclass, but true/false are not flight tuning values.
+        if type(value) not in (int, float):
+            raise ConfigurationError(f"{key} in {path} must be a JSON number, null or blank string")
+        values[key] = str(value)
+    return values
+
+
 def load_settings(
     env_file: Path = ENV_FILE,
     environ: Optional[Mapping[str, str]] = None,
+    overrides_file: Optional[Path] = None,
 ) -> FlightSettings:
-    """Read required flight values without modifying or expanding the environment."""
+    """Read JSON > process environment > .env, then validate the merged values.
+
+    By default, read src/flight_parameters.json regardless of the working
+    directory. An explicit overrides_file allows validation of another file.
+    """
     values = _read_values(env_file, environ)
+    path = FLIGHT_PARAMETERS_FILE if overrides_file is None else overrides_file
+    values.update(_flight_override_values(_read_flight_document(path), path))
+    return _parse_flight_settings(values, env_file)
+
+
+def _parse_flight_settings(values, env_file):
     parsed = {}
     for field in fields(FlightSettings):
         key = field.name.upper()
@@ -85,6 +160,59 @@ def load_settings(
             expected = "an integer" if field.type is int else "a number"
             raise ConfigurationError(f"{key} must be {expected}, got {value!r}") from error
     return FlightSettings(**parsed)
+
+
+def refresh_flight_parameter_defaults(
+    env_file: Path = ENV_FILE,
+    environ: Optional[Mapping[str, str]] = None,
+    overrides_file: Optional[Path] = None,
+):
+    """Publish actual fallback values at service startup, preserving overrides.
+
+    Only editable numeric flight defaults are exported; .env is never written.
+    Loading settings or importing config does not publish or change any files.
+    """
+    path = Path(FLIGHT_PARAMETERS_FILE if overrides_file is None else overrides_file)
+    values = _read_values(env_file, environ)
+    defaults = _parse_flight_settings(values, env_file)
+    document = _read_flight_document(path)
+    # Validate overrides before publishing a document the service cannot use.
+    _parse_flight_settings({**values, **_flight_override_values(document, path)}, env_file)
+    published_defaults = {}
+    for field in fields(FlightSettings):
+        key = field.name.upper()
+        if key in EDITABLE_FLIGHT_KEYS:
+            document.setdefault(key, None)
+            published_defaults[key] = getattr(defaults, field.name)
+    document['defaults'] = published_defaults
+
+    temporary_path = None
+    try:
+        previous = path.stat() if path.exists() else None
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=path.parent,
+            prefix=f'.{path.name}.', suffix='.tmp', delete=False,
+        ) as output:
+            temporary_path = Path(output.name)
+            json.dump(document, output, indent=2, allow_nan=False)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        if previous is not None:
+            # Preserve ownership, mode and Linux ACLs for the WebUI's file access.
+            current = temporary_path.stat()
+            if (current.st_uid, current.st_gid) != (previous.st_uid, previous.st_gid):
+                os.chown(temporary_path, previous.st_uid, previous.st_gid)
+            shutil.copystat(path, temporary_path)
+            os.utime(temporary_path, None)
+        else:
+            temporary_path.chmod(0o644)
+        os.replace(temporary_path, path)
+    except OSError as error:
+        raise ConfigurationError(f"Cannot publish flight defaults to {path}: {error}") from error
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
