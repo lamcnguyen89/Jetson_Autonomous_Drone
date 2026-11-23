@@ -81,8 +81,9 @@ several minutes; the measured first build on this Jetson took about 13 minutes.
 The installer preserves your `.env` and its selected inference backend.
 
 The script discovers the project location, so an absolute path to the installer
-also works from another working directory. It validates dependencies and the
-rendered service before installing `/etc/systemd/system/Auto_Drone.service`.
+also works from another working directory. It fills in the project path and service
+user in [systemd/Auto_Drone.service](systemd/Auto_Drone.service), validates dependencies
+and the rendered service, then installs it as `/etc/systemd/system/Auto_Drone.service`.
 Before enabling Auto_Drone, the installer stops, disables, and removes these
 conflicting system services and their overrides if installed:
 `compact-vla-clock.service`, `compact-vla-drone.service`,

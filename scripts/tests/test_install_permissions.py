@@ -37,7 +37,9 @@ state = json.loads(Path(os.environ['TEST_STATE']).read_text())
 if state.get('model_preparation_fails'):
     raise SystemExit('Simulated model preparation failure')
 ''')
-    for name in ('Auto_Drone.service', '80-auto-drone-oak.rules', 'mavlink_udev.py'):
+    (project / 'systemd').mkdir()
+    shutil.copy2(ROOT / 'systemd/Auto_Drone.service', project / 'systemd/Auto_Drone.service')
+    for name in ('80-auto-drone-oak.rules', 'mavlink_udev.py'):
         shutil.copy2(ROOT / 'scripts' / name, project / 'scripts' / name)
     (project / 'requirements.txt').write_text('')
     (project / 'requirements-jetson.txt').write_text('-r requirements.txt\n')
@@ -143,7 +145,11 @@ def test_installs_and_verifies_permissions(installer, group_exists, groups):
     assert any(c[0] == 'usermod' for c in calls) == ('dialout' not in groups)
     assert (rules / '80-auto-drone-oak.rules').is_file()
     assert 'ENV{ID_SERIAL_SHORT}=="controller-123"' in (rules / '99-auto-drone-mavlink.rules').read_text()
-    assert (units / 'Auto_Drone.service').is_file()
+    template = (project / 'systemd/Auto_Drone.service').read_text()
+    expected_unit = template.replace('@PROJECT_ROOT@', str(project).replace('%', '%%'))
+    expected_unit = expected_unit.replace('@SERVICE_USER@', getpass.getuser())
+    assert (units / 'Auto_Drone.service').read_text() == expected_unit
+    assert (units / 'Auto_Drone.service').stat().st_mode & 0o777 == 0o644
     access_check = next(i for i, c in enumerate(calls) if c[-3:] == ['test', '-w', '/dev/null'])
     enable = next(i for i, c in enumerate(calls) if c[:2] == ['systemctl', 'enable'])
     assert access_check < enable

@@ -244,7 +244,7 @@ def systemd_escape(value):
         raise ValueError('The project path and service user must not contain newlines')
     return value.replace('%', '%%')
 
-template = (Path(project_root) / 'scripts' / 'Auto_Drone.service').read_text()
+template = (Path(project_root) / 'systemd' / 'Auto_Drone.service').read_text()
 rendered = template.replace('@PROJECT_ROOT@', systemd_escape(project_root))
 rendered = rendered.replace('@SERVICE_USER@', systemd_escape(service_user))
 Path(output).write_text(rendered)
