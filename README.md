@@ -93,6 +93,20 @@ and data are preserved. Add `--start` to also start/restart Auto_Drone immediate
 On subsequent installs, an active service keeps running until restarted; use
 `--start` when ready to apply dependency changes to that process.
 
+To install the service and start/restart it using an already prepared checkout,
+without installing packages or accessing the internet, run:
+
+```bash
+sudo ./scripts/Start_Auto_Drone_Offline.sh
+```
+
+This requires an existing `.env`, `.venv`, installed dependencies, prepared models,
+and device permissions. It renders and validates the unit, installs it as
+`/etc/systemd/system/Auto_Drone.service`, enables it at boot, and restarts it now.
+It leaves competing services and their overrides untouched and does not change
+network settings or prepare models. Existing services may still hold the hardware;
+check `journalctl -u Auto_Drone.service -f` if startup fails.
+
 For simulation and tests, include the optional Python dependencies:
 
 ```bash
