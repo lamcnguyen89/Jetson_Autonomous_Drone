@@ -17,7 +17,8 @@ import cv2
 import depthai as dai
 import numpy as np
 
-from config import inference_settings, settings
+import config as flight_config
+from config import inference_settings
 from .detection import Detection
 from .runtime import PerceptionCamera, capture_time
 from .spatial import spatial_position
@@ -110,7 +111,7 @@ def create_tracker():
     config = YAML.load(Path(__file__).with_name('botsort.yaml'))
     # A new identity needs flight-quality evidence. Lower-score detections may
     # still associate with an existing track in BoT-SORT's matching stages.
-    config['new_track_thresh'] = max(config['track_high_thresh'], settings.detection_thresh)
+    config['new_track_thresh'] = max(config['track_high_thresh'], flight_config.settings.detection_thresh)
     return BOTSORT(IterableSimpleNamespace(**config))
 
 
@@ -203,6 +204,8 @@ class JetsonCamera(PerceptionCamera):
                     rows = detector.infer(frame)
                     # Low-confidence person detections aid track association; the
                     # flight-facing confidence threshold is applied below.
+                    threshold = flight_config.settings.detection_thresh
+                    tracker.args.new_track_thresh = max(tracker.args.track_high_thresh, threshold)
                     tracks = tracker.update(Boxes(rows, frame.shape[:2]), frame)
                     fps = 0 if last_capture is None else 1 / max(captured_at - last_capture, 1e-6)
                     last_capture = captured_at
@@ -213,7 +216,7 @@ class JetsonCamera(PerceptionCamera):
                         # than the Kalman-smoothed box returned by the tracker.
                         box = rows[int(track[7]), :4]
                         track_id, confidence = int(track[4]), float(track[5])
-                        if confidence < settings.detection_thresh:
+                        if confidence < threshold:
                             continue
                         position = spatial_position(box, depth, intrinsics)
                         if position is None:

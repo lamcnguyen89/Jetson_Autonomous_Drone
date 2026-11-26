@@ -17,7 +17,8 @@ import cv2
 import threading
 import logging
 
-from config import settings, inference_settings
+import config as flight_config
+from config import inference_settings
 
 # Legacy lifecycle flags assume a single Luxonis camera worker per process.
 # Factory selection ensures the service creates only one active camera backend.
@@ -90,9 +91,10 @@ def thread(callback, _pipeline, outputFrames):
                 width  = frame.shape[1]
 
             personDetections = []
+            threshold = flight_config.settings.detection_thresh
             for detection in detections:
                 # The shipped COCO model uses class 0 for people.
-                if detection.label == 0:
+                if detection.label == 0 and detection.confidence >= threshold:
                     # Ignore detections with depth closer than the minimum the camera supports
                     if (detection.spatialCoordinates.z / 1000.0) <= 0.5:
                         continue
@@ -190,7 +192,9 @@ class YoloCamera(PerceptionCamera):
         self._spatialDetectionNetwork.setBlobPath(str(self.config.luxonis_model_path))
         # The blob is compiled for the OAK VPU. Jetson mode loads its separate
         # TensorRT engine instead; the two artifacts are not interchangeable.
-        self._spatialDetectionNetwork.setConfidenceThreshold(settings.detection_thresh)
+        # Filter on the host so lowering DETECTION_THRESH also takes effect
+        # without rebuilding the OAK pipeline. Device-side NMS is unchanged.
+        self._spatialDetectionNetwork.setConfidenceThreshold(0.0)
         self._spatialDetectionNetwork.input.setBlocking(False)
         self._spatialDetectionNetwork.setBoundingBoxScaleFactor(0.5)
         self._spatialDetectionNetwork.setDepthLowerThreshold(250)

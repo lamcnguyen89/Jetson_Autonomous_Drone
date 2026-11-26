@@ -19,7 +19,8 @@ from dronekit_compat import apply_dronekit_compatibility
 apply_dronekit_compatibility()
 
 from dronekit import connect, Vehicle
-from config import settings, notification_settings, inference_settings, refresh_flight_parameter_defaults
+import config as flight_config
+from config import notification_settings, inference_settings, refresh_flight_parameter_defaults
 from core import Core
 from camera.base import BaseCamera
 from camera.factory import create_camera, camera_class
@@ -124,7 +125,7 @@ def prepare_tracking_core(vehicle, camera, should_stop):
     if not wait_for_camera_ready(camera, notification_settings.camera_ready_timeout, should_stop):
         return None
     if (vehicle._trusted_fc_system_id is None
-            or vehicle.last_heartbeat >= settings.heartbeat_timeout):
+            or vehicle.last_heartbeat >= flight_config.settings.heartbeat_timeout):
         raise RuntimeError('Flight-controller connection is not ready')
     notifier = Notifier(vehicle)
     prepared = Core(vehicle, camera, notifier=notifier)
@@ -175,9 +176,9 @@ def main(args):
 
     logger = logging.getLogger()
     logger.info('Flight service starting: pid=%s uri=%s baud=%s log=%s',
-                os.getpid(), args.uri, settings.baud_rate, logFile)
+                os.getpid(), args.uri, flight_config.settings.baud_rate, logFile)
     logger.info('Removed %d previous logs without an arming attempt', removed_logs)
-    logger.debug('Flight settings: %s', settings)
+    logger.debug('Flight settings: %s', flight_config.settings)
     logger.debug('Notification settings: %s', notification_settings)
     logger.info('Inference configuration: %s', inference_settings)
 
@@ -220,7 +221,7 @@ def main(args):
                 logging.info("Starting core")
                 logging.info("Connecting to vehicle on: %s" % (args.uri,))
                 connection_started = time.monotonic()
-                vehicle = connect(args.uri, baud=settings.baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20, vehicle_class=FlightControllerVehicle )
+                vehicle = connect(args.uri, baud=flight_config.settings.baud_rate, wait_ready=['gps_0', 'armed', 'mode', 'attitude'], rate=20, vehicle_class=FlightControllerVehicle )
                 logging.info('Flight-controller connection ready: elapsed=%.2fs',
                              time.monotonic() - connection_started)
 

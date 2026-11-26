@@ -101,7 +101,7 @@ def test_pilot_arm_starts_delay_then_one_takeoff(control, activations, monkeypat
             assert not activations
         else:
             assert core.state is ExecutionState.AwaitingReady
-            assert vehicle.takeoffs == [module.settings.altitude]
+            assert vehicle.takeoffs == [module.flight_config.settings.altitude]
             assert activations == ['active']
             core.stop()
 
@@ -131,7 +131,7 @@ def test_takeoff_delay_rechecks_pilot_and_readiness(control, activations, monkey
             elif interruption == 'mode':
                 vehicle.report_mode('LOITER')
             elif interruption == 'connection':
-                vehicle.last_heartbeat = module.settings.heartbeat_timeout + 1
+                vehicle.last_heartbeat = module.flight_config.settings.heartbeat_timeout + 1
                 core.lastHeartbeatCallback(None, None, None)
             elif interruption == 'camera':
                 camera.available = False
@@ -157,7 +157,7 @@ def test_takeoff_state_never_arms_or_launches_without_readiness(control, activat
     elif interruption == 'mode':
         vehicle.mode.name = 'LOITER'
     elif interruption == 'connection':
-        vehicle.last_heartbeat = module.settings.heartbeat_timeout + 1
+        vehicle.last_heartbeat = module.flight_config.settings.heartbeat_timeout + 1
     else:
         camera.available = False
     core.state = ExecutionState.Takeoff
@@ -185,7 +185,7 @@ def test_activation_notification_failure_does_not_interrupt_takeoff(control, mon
     def sleep(duration):
         if duration == 0.1:
             assert core.state is ExecutionState.AwaitingReady
-            assert vehicle.takeoffs == [module.settings.altitude]
+            assert vehicle.takeoffs == [module.flight_config.settings.altitude]
             core.stop()
 
     monkeypatch.setattr(module.time, 'sleep', sleep)

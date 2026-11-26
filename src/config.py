@@ -1,19 +1,22 @@
-"""Typed, immutable settings read once at startup.
+"""Typed settings with validated flight snapshots refreshed while disarmed.
 
 Flight tuning, notifications and inference selection have separate settings
 objects so each component receives the values relevant to its responsibility.
 Environment variables override .env values, matching systemd deployments.
 Flight-only JSON overrides take precedence; blank values retain env defaults.
-Runtime code reads these snapshots; edits take effect after restart.
+Runtime code reads the current flight snapshot. Environment defaults,
+notifications and inference selection remain fixed until restart.
 """
 
 from dataclasses import dataclass, fields
 import json
+import logging
 import math
 import os
 from pathlib import Path
 import shutil
 import tempfile
+import time
 from typing import Mapping, Optional
 
 from dotenv import dotenv_values
@@ -21,6 +24,8 @@ from dotenv import dotenv_values
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 FLIGHT_PARAMETERS_FILE = Path(__file__).resolve().parent / "flight_parameters.json"
+FLIGHT_PARAMETER_POLL_INTERVAL = 2.0
+logger = logging.getLogger(__name__)
 
 # Keep machine settings, notifications, and inference selection outside the
 # WebUI-editable contract. New FlightSettings fields are not exposed implicitly.
@@ -160,6 +165,49 @@ def _parse_flight_settings(values, env_file):
             expected = "an integer" if field.type is int else "a number"
             raise ConfigurationError(f"{key} must be {expected}, got {value!r}") from error
     return FlightSettings(**parsed)
+
+
+def load_flight_overrides(defaults: FlightSettings, overrides_file=None) -> FlightSettings:
+    """Validate JSON against startup defaults without rereading machine settings."""
+    path = FLIGHT_PARAMETERS_FILE if overrides_file is None else overrides_file
+    values = {field.name.upper(): str(getattr(defaults, field.name))
+              for field in fields(FlightSettings)}
+    values.update(_flight_override_values(_read_flight_document(path), path))
+    return _parse_flight_settings(values, ENV_FILE)
+
+
+class FlightParameterPoller:
+    """Called by Core; read JSON at most every two seconds, only while disarmed."""
+
+    def __init__(self, clock=None):
+        self._clock = time.monotonic if clock is None else clock
+        self._next_poll = self._clock() + FLIGHT_PARAMETER_POLL_INTERVAL
+
+    def poll(self, vehicle):
+        global settings
+        now = self._clock()
+        if now < self._next_poll:
+            return False
+        self._next_poll = now + FLIGHT_PARAMETER_POLL_INTERVAL
+        if vehicle.armed is not False:
+            return False
+        try:
+            candidate = load_flight_overrides(_flight_defaults)
+        except ConfigurationError as error:
+            logger.warning('Ignoring invalid flight parameter update; keeping last valid settings: %s', error)
+            return False
+        # Arming can arrive on DroneKit's I/O thread while the file is read.
+        if vehicle.armed is not False or candidate == settings:
+            return False
+        previous = settings
+        # Publish the entire immutable snapshot in one assignment. Consumers
+        # read config.settings rather than retaining the startup object.
+        settings = candidate
+        changed = {field.name.upper(): getattr(candidate, field.name)
+                   for field in fields(FlightSettings)
+                   if getattr(candidate, field.name) != getattr(previous, field.name)}
+        logger.info('Reloaded flight parameters while disarmed: %s', changed)
+        return True
 
 
 def refresh_flight_parameter_defaults(
@@ -317,7 +365,8 @@ def load_inference_settings(env_file: Path = ENV_FILE, environ=None) -> Inferenc
     return InferenceSettings(**parsed)
 
 
-# Immutable for the lifetime of this process; restart after editing flight values.
-settings = load_settings()
+# Keep fallback values fixed for the process lifetime. Only JSON tuning is live.
+_flight_defaults = _parse_flight_settings(_read_values(ENV_FILE, None), ENV_FILE)
+settings = load_flight_overrides(_flight_defaults)
 notification_settings = load_notification_settings()
 inference_settings = load_inference_settings()

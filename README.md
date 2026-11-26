@@ -12,7 +12,7 @@ explain the less obvious choices at each step.
 | Start here | Responsibility and connection to the next layer |
 | --- | --- |
 | [src/main.py](src/main.py) | Assembles the service, waits for readiness, and starts camera/control workers. |
-| [src/config.py](src/config.py) | Reads `.env` and flight JSON overrides into immutable settings, including backend selection. |
+| [src/config.py](src/config.py) | Validates flight JSON snapshots, polls while disarmed, and loads startup defaults and backend selection. |
 | [src/camera/factory.py](src/camera/factory.py) | Chooses the camera adapter at startup. |
 | [src/camera/runtime.py](src/camera/runtime.py) | Publishes batches and enforces capture-age freshness for both real backends. |
 | [src/core.py](src/core.py) and [src/rules/base.py](src/rules/base.py) | Separate flight lifecycle from priority-ordered backoff/follow/search/hold decisions. |
@@ -178,8 +178,13 @@ The loader does not modify the process environment or interpolate `$variables`.
 Flight parameters are read from `src/flight_parameters.json` at startup, with
 precedence **JSON override > process environment > .env**. The JSON path is also
 absolute and independent of the working directory. This applies to the real
-flight service and SITL. The supplied JSON lists every editable parameter as
-`null`, preserving the existing defaults until you enter a value. For example:
+flight service and SITL. While the drone is disarmed, Core polls the JSON every
+2 seconds and applies valid changes together as a new settings snapshot. The
+file is not read or applied while armed; saved changes wait until a poll after
+disarming. Invalid or unreadable updates are logged and retain the last valid
+settings, with another attempt on the next poll. The supplied JSON lists every
+editable parameter as `null`, preserving the existing defaults until you enter
+a value. For example:
 
 ```json
 {
@@ -218,7 +223,7 @@ read-only display metadata: the flight code ignores its values, even if changed,
 and replaces the entire object at the next service startup. Only allowed flight
 defaults are exported; machine settings and other `.env` contents are excluded.
 The displayed default is the fallback, not necessarily the running value when
-an override is set. Saved override changes still require a service restart.
+an override is set. Saved override changes take effect on the next disarmed poll.
 
 Only the 13 tuning keys in the table above are editable through JSON; `BAUD_RATE`
 is excluded. Machine settings, inference selection, and notifications cannot be
@@ -246,9 +251,14 @@ heartbeat timeout must be positive; altitude tolerance must be below the target
 altitude, the backoff trigger must not exceed the following distance, and
 detection confidence must be between 0 and 1.
 
-The shared settings object is immutable for the process lifetime. After saving
-flight overrides or changing defaults, restart the application, SITL backend,
-or service while disarmed:
+Each settings snapshot is immutable; validated JSON changes replace the shared
+snapshot while disarmed. All 13 editable keys support this, including camera
+confidence thresholds. Blank or removed overrides use the `.env` plus process
+environment defaults captured at startup. Polling only reads the JSON; it does
+not rewrite the file or refresh its generated `defaults` metadata.
+
+After changing `.env`, machine settings, inference selection, or notifications,
+restart the application, SITL backend, or service while disarmed:
 
 ```bash
 sudo systemctl restart Auto_Drone.service

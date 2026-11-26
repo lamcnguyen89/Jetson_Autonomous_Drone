@@ -25,7 +25,7 @@ def controller_settings(monkeypatch):
         follow_position_deadband=0.15, altitude_velocity_gain=1.5,
         max_vertical_speed=0.5,
     )
-    monkeypatch.setattr(commands, 'settings', configured)
+    monkeypatch.setattr('config.settings', configured)
     return configured
 
 

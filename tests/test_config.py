@@ -56,8 +56,8 @@ def test_default_file_is_independent_of_working_directory(tmp_path, monkeypatch,
     monkeypatch.chdir(tmp_path)
     assert load_settings(environ={}) == expected
     assert expected.speed == 0.4
-    assert ENV_FILE == Path(__file__).resolve().parents[2] / '.env'
-    assert FLIGHT_PARAMETERS_FILE == Path(__file__).resolve().parents[1] / 'flight_parameters.json'
+    assert ENV_FILE == Path(__file__).resolve().parents[1] / '.env'
+    assert FLIGHT_PARAMETERS_FILE == Path(__file__).resolve().parents[1] / 'src' / 'flight_parameters.json'
 
 
 def test_json_overrides_reach_every_editable_flight_setting(env_file, overrides_file):
@@ -332,8 +332,7 @@ def test_env_tuning_reaches_velocity_and_following_commands(env_file, monkeypatc
     }.items():
         set_value(env_file, key, value)
     configured = load_settings(env_file, environ={})
-    for module in (commands, backoff, follow, search):
-        monkeypatch.setattr(module, 'settings', configured)
+    monkeypatch.setattr('config.settings', configured)
 
     vx, vy = commands.positionErrorToHorizontalVelocity(10.0, 10.0)
     assert math.hypot(vx, vy) == pytest.approx(0.2)
@@ -355,7 +354,7 @@ def test_json_tuning_reaches_velocity_commands(env_file, overrides_file, monkeyp
     import commands
 
     overrides_file.write_text('{"ALTITUDE": 5, "SPEED": 0.2, "MAX_VERTICAL_SPEED": 0.1}')
-    monkeypatch.setattr(commands, 'settings', load_settings(env_file, environ={}))
+    monkeypatch.setattr('config.settings', load_settings(env_file, environ={}))
     vx, vy = commands.positionErrorToHorizontalVelocity(10.0, 10.0)
     assert math.hypot(vx, vy) == pytest.approx(0.2)
     assert commands.altitudeErrorToVerticalVelocity(4.0) == -0.1

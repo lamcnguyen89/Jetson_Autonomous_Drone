@@ -1,5 +1,5 @@
 from .base import BaseRule
-from config import settings
+import config as flight_config
 
 class BackoffRule(BaseRule):
     '''
@@ -10,7 +10,7 @@ class BackoffRule(BaseRule):
         # Core evaluates backoff first, so this threshold can suppress following.
         # The camera owns target selection; Jetson's result may be a locked ID.
         return self.camera.closestDetection() != None and \
-            self.camera.closestDetection().z < settings.backoff_distance
+            self.camera.closestDetection().z < flight_config.settings.backoff_distance
 
     def update(self):
         detection = self.camera.closestDetection()
@@ -22,7 +22,7 @@ class BackoffRule(BaseRule):
 
         # A target nearer than the desired separation produces negative forward
         # error (backward motion); retain lateral centering at the same time.
-        self._targetPosition = (zDistance - settings.minimum_distance, xDistance)
+        self._targetPosition = (zDistance - flight_config.settings.minimum_distance, xDistance)
 
     def name(self) -> str:
         return 'backoff'

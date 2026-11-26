@@ -1,6 +1,6 @@
 from .base import BaseRule
 import math
-from config import settings
+import config as flight_config
 
 class FollowRule(BaseRule):
     '''
@@ -22,15 +22,15 @@ class FollowRule(BaseRule):
         # that side with a quadratic response near center and a configured cap.
         invertYaw = xDistance < 0
 
-        yawRate = (math.pow(xDistance, 2) / 4.0) * settings.yaw_rate * (-1 if invertYaw else 1)
-        if yawRate < -settings.yaw_rate:
-            yawRate = -settings.yaw_rate
-        if yawRate > settings.yaw_rate:
-            yawRate = settings.yaw_rate
+        yawRate = (math.pow(xDistance, 2) / 4.0) * flight_config.settings.yaw_rate * (-1 if invertYaw else 1)
+        if yawRate < -flight_config.settings.yaw_rate:
+            yawRate = -flight_config.settings.yaw_rate
+        if yawRate > flight_config.settings.yaw_rate:
+            yawRate = flight_config.settings.yaw_rate
 
         # Follow the desired separation, not the person's entire forward depth.
         # commands.py later converts these meter errors to bounded velocities.
-        self._targetPosition = (zDistance - settings.minimum_distance, xDistance)
+        self._targetPosition = (zDistance - flight_config.settings.minimum_distance, xDistance)
         self._targetYaw = yawRate
 
     def headingChange(self, xDistance, zDistance):

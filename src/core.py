@@ -11,7 +11,7 @@ import time
 import logging
 
 from enum import Enum
-from config import settings
+import config as flight_config
 
 from commands import setPositionTarget
 from dronekit import Vehicle, VehicleMode
@@ -50,6 +50,7 @@ class Core:
         self.notifier = notifier
         self._notification_error_logged = False
         self.activeRule = 'n/a'
+        self._flight_parameter_poller = flight_config.FlightParameterPoller()
 
         # DroneKit delivers these callbacks from its I/O processing. They can
         # change state while the control worker is sleeping or awaiting takeoff.
@@ -108,7 +109,7 @@ class Core:
         if not self.isConnected() and self.state != ExecutionState.Init:
             if self.state != ExecutionState.ConnectionLoss:
                 logger.warning('Flight-controller heartbeat timeout: age=%.2fs limit=%.2fs',
-                               self.vehicle.last_heartbeat, settings.heartbeat_timeout)
+                               self.vehicle.last_heartbeat, flight_config.settings.heartbeat_timeout)
             self._set_state(ExecutionState.ConnectionLoss, 'flight-controller heartbeat timed out')
 
     #### Getters
@@ -121,10 +122,10 @@ class Core:
 
     def isAltitudeOk(self) -> bool:
         # TODO: This does not account for altitude at current position, only from home
-        return self.vehicle.location.global_relative_frame.alt >= settings.altitude - settings.altitude_fuzziness
+        return self.vehicle.location.global_relative_frame.alt >= flight_config.settings.altitude - flight_config.settings.altitude_fuzziness
 
     def isConnected(self) -> bool:
-        return self.vehicle.last_heartbeat < settings.heartbeat_timeout
+        return self.vehicle.last_heartbeat < flight_config.settings.heartbeat_timeout
 
     def readyForTakeoff(self) -> bool:
         # Arming belongs to the pilot and the flight controller's normal checks.
@@ -176,6 +177,7 @@ class Core:
 
     def run(self) -> None:
         while not self.state is ExecutionState.Stop:
+            self._flight_parameter_poller.poll(self.vehicle)
 
             if self.state is ExecutionState.Init:
                 # Do nothing during setup.
@@ -183,7 +185,7 @@ class Core:
                 pass
             elif self.state is ExecutionState.AwaitingArm:
                 if self.readyForTakeoff():
-                    logger.info('Takeoff safety delay started: duration=5s altitude=%sm', settings.altitude)
+                    logger.info('Takeoff safety delay started: duration=5s altitude=%sm', flight_config.settings.altitude)
                     time.sleep(5) # safety delay
 
                     # Pilot/connection callbacks can interrupt the delay.
@@ -214,8 +216,8 @@ class Core:
                         self._set_state(ExecutionState.AwaitingArm, 'takeoff readiness lost')
                     continue
 
-                logger.info('Take off to %sm; queuing simple_takeoff command', settings.altitude)
-                self.vehicle.simple_takeoff(settings.altitude)
+                logger.info('Take off to %sm; queuing simple_takeoff command', flight_config.settings.altitude)
+                self.vehicle.simple_takeoff(flight_config.settings.altitude)
                 logger.info('Takeoff command queued; waiting for altitude')
 
                 if self.notifier is not None:

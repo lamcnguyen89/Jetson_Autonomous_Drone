@@ -36,7 +36,7 @@ def test_selection_and_paths_are_independent_of_working_directory(tmp_path, monk
     path.write_text('INFERENCE_BACKEND=jetson\nJETSON_MODEL_PATH=models/custom.engine\n')
     monkeypatch.chdir(tmp_path)
     config = load_inference_settings(path, environ={})
-    assert config.jetson_model_path == Path(__file__).resolve().parents[2] / 'models/custom.engine'
+    assert config.jetson_model_path == Path(__file__).resolve().parents[1] / 'models/custom.engine'
     assert camera_class(config) is JetsonCamera
     assert create_camera(config=config).config is config
     assert load_inference_settings(path, environ={'INFERENCE_BACKEND': 'luxonis'}).backend == 'luxonis'
@@ -57,7 +57,7 @@ def test_invalid_inference_configuration_is_rejected(tmp_path, key, value):
 
 
 def test_luxonis_startup_does_not_import_gpu_or_tracker_dependencies():
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     import os
     result = subprocess.run([sys.executable, '-c',
                              'import main, sys; '
@@ -71,7 +71,7 @@ def test_luxonis_startup_does_not_import_gpu_or_tracker_dependencies():
 @pytest.mark.parametrize('script', ['utils/camera.py', 'utils/check_jetson_inference.py',
                                     'scripts/prepare_jetson_model.py'])
 def test_camera_tools_can_show_help_outside_project_without_hardware(script, tmp_path):
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[1]
     result = subprocess.run([sys.executable, str(root / script), '--help'], cwd=tmp_path,
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -220,15 +220,29 @@ def test_gpu_startup_failure_does_not_open_camera_or_fall_back(monkeypatch):
     assert not camera.ready_event.is_set() and not camera.running()
 
 
-def test_jetson_worker_publishes_rgb_depth_tracks_without_hardware(monkeypatch):
+@pytest.mark.parametrize('thresholds,counts', [
+    ([0.5], [1]),
+    ([0.9, 0.4, 0.4, 0.95], [0, 0, 1, 0]),
+])
+def test_jetson_worker_publishes_rgb_depth_tracks_without_hardware(monkeypatch, thresholds, counts):
     pytest.importorskip('ultralytics')
     from camera import jetson, tensorrt_yolo
+    import config as flight_config
+    monkeypatch.setattr(flight_config, 'settings', replace(flight_config.settings, detection_thresh=thresholds[0]))
     frame = np.zeros((360, 640, 3), np.uint8)
     depth = np.full((360, 640), 3000, np.uint16)
     config = replace(InferenceSettings(), backend='jetson')
     observed = []
-    camera = JetsonCamera(lambda detections, image: (observed.append(detections), camera._stop.set()), config)
-    detector = SimpleNamespace(infer=lambda image: np.array([[100, 80, 200, 300, .95, 0]], np.float32),
+
+    def callback(detections, image):
+        observed.append(detections)
+        if len(observed) == len(thresholds):
+            camera._stop.set()
+        else:
+            flight_config.settings = replace(flight_config.settings, detection_thresh=thresholds[len(observed)])
+
+    camera = JetsonCamera(callback, config)
+    detector = SimpleNamespace(infer=lambda image: np.array([[100, 80, 200, 300, .8, 0]], np.float32),
                                close=lambda: None)
     monkeypatch.setattr(tensorrt_yolo, 'TensorRTYolo', lambda path: detector)
     monkeypatch.setattr(jetson, 'capture_time', lambda *a: time.monotonic())
@@ -247,8 +261,48 @@ def test_jetson_worker_publishes_rgb_depth_tracks_without_hardware(monkeypatch):
     assert camera.stopped_event.wait(10)
     camera.stop()
     assert camera.error is None
-    assert observed[0][0].z == 3
-    assert observed[0][0].track_id is not None
+    assert list(map(len, observed)) == counts
+    detection = next(batch[0] for batch in observed if batch)
+    assert detection.z == 3
+    assert detection.track_id is not None
+
+
+def test_luxonis_worker_uses_current_confidence_threshold_for_each_batch(monkeypatch):
+    from camera import yolocam
+    import config as flight_config
+
+    camera = yolocam.YoloCamera()
+    assert camera._spatialDetectionNetwork.getConfidenceThreshold() == 0
+    thresholds = [0.9, 0.4, 0.95]
+    monkeypatch.setattr(flight_config, 'settings', replace(flight_config.settings, detection_thresh=thresholds[0]))
+    monkeypatch.setattr(yolocam, 'THREAD_STOP', False)
+    monkeypatch.setattr(yolocam, 'RUNNING', False)
+    detection = SimpleNamespace(label=0, confidence=0.8,
+                                spatialCoordinates=SimpleNamespace(x=0, y=0, z=3000))
+    packet = SimpleNamespace(detections=[detection])
+    queue = SimpleNamespace(tryGet=lambda: packet, close=lambda: None)
+
+    class Device:
+        def __init__(self, pipeline): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def getUsbSpeed(self): return 'mock'
+        def getOutputQueue(self, **kwargs): return queue
+
+    monkeypatch.setattr(yolocam.dai, 'Device', Device)
+    monkeypatch.setattr(yolocam, 'capture_time', lambda *args: time.monotonic())
+    observed = []
+
+    def callback(detections, frame, captured_at):
+        observed.append(detections)
+        if len(observed) == len(thresholds):
+            yolocam.THREAD_STOP = True
+        else:
+            flight_config.settings = replace(flight_config.settings, detection_thresh=thresholds[len(observed)])
+
+    yolocam.thread(callback, object(), False)
+    assert list(map(len, observed)) == [0, 1, 0]
+    assert observed[1][0].z == 3
 
 
 @pytest.mark.parametrize('healthy,waiting', [(False, False), (True, True)])
