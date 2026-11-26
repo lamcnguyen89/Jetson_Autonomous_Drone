@@ -274,6 +274,7 @@ def test_model_preparation_failure_prevents_service_install_or_restart(installer
 
 
 CONFLICTING_UNITS = (
+    'dynamic_drone_target.service',
     'compact-vla-clock.service', 'compact-vla-drone.service',
     'compact-vla-server.service', 'luxonis-rlds-recorder.service',
     'mavros-stream-monitor.service', 'mavros.service',

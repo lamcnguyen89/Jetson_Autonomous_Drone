@@ -12,7 +12,7 @@ usage() {
     echo "Install both inference backends, project .venv, permissions and the service."
     echo "Prepare YOLO26m automatically when no valid TensorRT engine is available."
     echo "Creates a missing .env from .env.example; keeps existing configuration."
-    echo "Uninstalls conflicting Compact VLA, RLDS recorder and MAVROS services."
+    echo "Uninstalls conflicting Dynamic Drone, Compact VLA, RLDS recorder and MAVROS services."
     echo "Connect the MAVLink controller and check the configured port before running."
     echo "  --with-sitl  Also install simulation and test dependencies."
     echo "  --start      Also start/restart the service now (always enabled at boot)."
@@ -278,6 +278,7 @@ echo "Verified $SERVICE_USER can read/write $MAVLINK_PORT."
 # Stop competing hardware users before enabling Auto_Drone. Wait until all
 # validation succeeds so a failed preparation leaves existing services intact.
 conflicting_units=(
+    dynamic_drone_target.service
     compact-vla-clock.service
     compact-vla-drone.service
     compact-vla-server.service

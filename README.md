@@ -86,7 +86,7 @@ user in [systemd/Auto_Drone.service](systemd/Auto_Drone.service), validates depe
 and the rendered service, then installs it as `/etc/systemd/system/Auto_Drone.service`.
 Before enabling Auto_Drone, the installer stops, disables, and removes these
 conflicting system services and their overrides if installed:
-`compact-vla-clock.service`, `compact-vla-drone.service`,
+`dynamic_drone_target.service`, `compact-vla-clock.service`, `compact-vla-drone.service`,
 `compact-vla-server.service`, `luxonis-rlds-recorder.service`,
 `mavros-stream-monitor.service`, and `mavros.service`. Their application files
 and data are preserved. Add `--start` to also start/restart Auto_Drone immediately.
