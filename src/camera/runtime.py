@@ -15,6 +15,7 @@ class PerceptionCamera(BaseCamera):
     apply the same rules before their positions can drive movement.
     """
     def __init__(self, callback=None, config=inference_settings):
+        """Initialize common capture timestamps, selection state, and callback."""
         self.config = config
         self.ready_event = threading.Event()
         self.stopped_event = threading.Event()
@@ -25,6 +26,7 @@ class PerceptionCamera(BaseCamera):
         self._userCallback = callback
 
     def _fresh(self, snapshot=None):
+        """Check that the latest observation is within its movement freshness limit."""
         # A live worker alone is insufficient: USB or GPU work may have stalled.
         # Capture time includes time spent in transport and inference; receipt
         # time would make an old frame appear current whenever it finally arrived.
@@ -34,6 +36,7 @@ class PerceptionCamera(BaseCamera):
                 and 0 <= time.monotonic() - captured_at <= self.config.max_age)
 
     def _publish(self, detections, frame, captured_at=None, *, selected=None, holding=False):
+        """Publish a frame result atomically and notify the optional consumer."""
         # Publish position, timestamp and target-lock state together. Readers
         # must never see a new timestamp attached to a previous target position.
         self._snapshot = (list(detections), time.monotonic() if captured_at is None else captured_at,
@@ -47,6 +50,7 @@ class PerceptionCamera(BaseCamera):
             self._userCallback(detections, frame)
 
     def detections(self):
+        """Return the selected target only when the underlying frame is still fresh."""
         # Read one snapshot reference so its detections and timestamp stay paired.
         snapshot = self._snapshot
         return list(snapshot[0]) if self._fresh(snapshot) else []

@@ -37,6 +37,11 @@ class ExecutionState(str, Enum):
     Stop           = "STOP"
 
 class Core:
+    """Coordinate readiness, takeoff, perception rules, and guided movement.
+
+    DroneKit callbacks update the lifecycle state while ``run`` performs the
+    slower control loop. The pilot remains responsible for arming the vehicle.
+    """
 
     vehicle: Vehicle = None
     camera: BaseCamera = None
@@ -45,6 +50,7 @@ class Core:
     activeRule = 'n/a'
 
     def __init__(self, vehicle: Vehicle, camera: BaseCamera, notifier=None):
+        """Bind the flight controller and camera, register callbacks, and set rules."""
         self.camera = camera
         self.vehicle = vehicle
         self.notifier = notifier
@@ -71,6 +77,7 @@ class Core:
         self._set_state(ExecutionState.AwaitingArm, 'core initialized')
 
     def _set_state(self, state, reason):
+        """Record a lifecycle transition and log it when the state changes."""
         previous = self.state
         self.state = state
         if previous != state:
@@ -79,6 +86,7 @@ class Core:
     #### Callbacks
 
     def modeCallback(self, _, _1, _2) -> None:
+        """React to mode changes by pausing control or restarting readiness checks."""
         logger.info('Vehicle mode %s', self.vehicle.mode)
 
         if self.vehicle.mode.name != "GUIDED" and self.state not in [ExecutionState.Init, ExecutionState.ConnectionLoss, ExecutionState.Stop]:
@@ -100,12 +108,14 @@ class Core:
                 self._set_state(ExecutionState.AwaitingArm, 'GUIDED mode selected')
 
     def armedCallback(self, _, _1, _2) -> None:
+        """Return to the armed-wait state when the pilot disarms the vehicle."""
         logger.info('Vehicle armed %d', self.vehicle.armed)
 
         if not self.vehicle.armed and self.state != ExecutionState.Init:
             self._set_state(ExecutionState.AwaitingArm, 'vehicle disarmed')
 
     def lastHeartbeatCallback(self, _, _1, _2) -> None:
+        """Stop autonomous progression when the flight-controller heartbeat expires."""
         if not self.isConnected() and self.state != ExecutionState.Init:
             if self.state != ExecutionState.ConnectionLoss:
                 logger.warning('Flight-controller heartbeat timeout: age=%.2fs limit=%.2fs',
@@ -115,19 +125,23 @@ class Core:
     #### Getters
 
     def isReady(self) -> bool:
+        """Return whether guided, armed flight and a live camera are airborne."""
         return self.vehicle.armed and \
                 self.vehicle.mode.name == "GUIDED" and \
                 self.camera.running() and \
                 self.vehicle.location.global_relative_frame.alt > 0.5 # Indicates we are actually flying
 
     def isAltitudeOk(self) -> bool:
+        """Check whether home-relative altitude is within the configured lower bound."""
         # TODO: This does not account for altitude at current position, only from home
         return self.vehicle.location.global_relative_frame.alt >= flight_config.settings.altitude - flight_config.settings.altitude_fuzziness
 
     def isConnected(self) -> bool:
+        """Return whether the latest heartbeat is younger than the timeout limit."""
         return self.vehicle.last_heartbeat < flight_config.settings.heartbeat_timeout
 
     def readyForTakeoff(self) -> bool:
+        """Check takeoff prerequisites without arming or changing vehicle mode."""
         # Arming belongs to the pilot and the flight controller's normal checks.
         return self.vehicle.armed and \
                 self.vehicle.mode.name == "GUIDED" and \
@@ -137,6 +151,7 @@ class Core:
     #### State machine
 
     def _rule_command(self):
+        """Update rule histories and return the highest-priority active setpoint."""
         # A stale/failed camera is different from a healthy frame with no people.
         # Do not feed stale positions to follow/backoff or trigger search yaw.
         tracking_hold = getattr(self.camera, 'tracking_hold', lambda: False)
@@ -176,6 +191,7 @@ class Core:
         return state
 
     def run(self) -> None:
+        """Run the lifecycle state machine and issue movement commands while ready."""
         while not self.state is ExecutionState.Stop:
             self._flight_parameter_poller.poll(self.vehicle)
 
@@ -277,6 +293,7 @@ class Core:
             self.vehicle.disarm()
 
     def stop(self) -> None:
+        """Request loop termination and leave the vehicle under pilot control."""
         self._set_state(ExecutionState.Stop, 'stop requested')
 
         # Cleanup

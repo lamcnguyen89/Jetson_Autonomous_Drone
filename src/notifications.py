@@ -39,6 +39,7 @@ class Notifier:
     and a failure must not become a flight-control dependency.
     """
     def __init__(self, vehicle, config=None, clock=time.monotonic):
+        """Prepare rate-limited MAVLink status and RC notification handling."""
         self.vehicle = vehicle
         self.config = config if config is not None else notification_settings
         self._clock = clock
@@ -54,6 +55,7 @@ class Notifier:
         self._last_attempt = float('-inf')
 
     def _encoder(self):
+        """Return the message factory used to encode MAVLink status text."""
         if self._sender is None:
             # Learned from an accepted flight-controller heartbeat by our Vehicle
             # subclass. Do not use DroneKit's default GCS source system ID (255).
@@ -69,6 +71,7 @@ class Notifier:
         return self._sender
 
     def _send(self, message, beeps, severity):
+        """Send enabled operator text and audio feedback subject to rate limits."""
         # Called under the lock. DroneKit's MAVWriter queues bytes to its existing
         # I/O thread; no serial connection, transport write or sleep happens here.
         # All application status text is NOTICE, including legacy callers that
@@ -113,9 +116,11 @@ class Notifier:
             return self._send(message, beeps, severity)
 
     def status_text(self, message, severity=mavlink2.MAV_SEVERITY_NOTICE):
+        """Send a status message without requesting any audio beeps."""
         return self.notify(message, severity=severity)
 
     def beep(self, count):
+        """Request the specified number of beeps when audio feedback is enabled."""
         return self.notify(beeps=count)
 
     def service_ready(self):
@@ -159,6 +164,7 @@ class Notifier:
                                exc_info=True)
 
     def _rc_channels(self, vehicle, name, message):
+        """Listen for RC channel updates and route the selected channel's PWM value."""
         # Match the flight-controller identity learned from trusted heartbeats.
         if (message.get_srcSystem() != self.vehicle._trusted_fc_system_id
                 or message.get_srcComponent() != mavlink2.MAV_COMP_ID_AUTOPILOT1):
@@ -172,6 +178,7 @@ class Notifier:
                 self._rc12_notification(message.chan12_raw)
 
     def _rc9_notification(self, pwm):
+        """Translate RC channel 9 switch regions into operator feedback settings."""
         # Called under the shared lock. Missing samples never count as releases.
         active = 1600 <= pwm <= 2000
         if active == self._rc9_active:
@@ -185,6 +192,7 @@ class Notifier:
             logger.debug('RC9 notification button released: PWM=%d', pwm)
 
     def _rc12_notification(self, pwm):
+        """Translate RC channel 12 switch regions into rule-specific feedback."""
         # Require movement away from an endpoint before it can fire again.
         # The 100us release margin prevents jitter around 1200/1800 retriggering.
         previous = self._rc12_zone

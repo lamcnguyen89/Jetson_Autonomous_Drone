@@ -19,5 +19,6 @@ def camera_class(config=inference_settings):
 
 
 def create_camera(callback=None, config=inference_settings):
+    """Instantiate the selected backend and pass it the detection callback."""
     # Construction selects the adapter; start() owns the worker/hardware lifecycle.
     return camera_class(config)(callback, config=config)

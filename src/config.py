@@ -60,6 +60,7 @@ class FlightSettings:
     detection_thresh: float
 
     def __post_init__(self):
+        """Check that all flight tuning values are finite and mutually consistent."""
         for field in fields(self):
             value = getattr(self, field.name)
             if not math.isfinite(value) or value < 0:
@@ -76,6 +77,7 @@ class FlightSettings:
 
 
 def _read_values(env_file, environ):
+    """Read literal .env values and overlay environment values with higher priority."""
     # Use a project-root file rather than the caller's working directory. Disable
     # interpolation so Python reads the same literal values as the service file.
     env_file = Path(env_file)
@@ -87,6 +89,7 @@ def _read_values(env_file, environ):
 
 
 def _unique_json_object(pairs):
+    """Create a JSON mapping while rejecting repeated keys in tuning files."""
     values = {}
     for key, value in pairs:
         if key in values:
@@ -153,6 +156,7 @@ def load_settings(
 
 
 def _parse_flight_settings(values, env_file):
+    """Convert raw configuration strings to typed settings and validate the result."""
     parsed = {}
     for field in fields(FlightSettings):
         key = field.name.upper()
@@ -180,10 +184,12 @@ class FlightParameterPoller:
     """Called by Core; read JSON at most every two seconds, only while disarmed."""
 
     def __init__(self, clock=None):
+        """Initialize the periodic poll schedule with an injectable test clock."""
         self._clock = time.monotonic if clock is None else clock
         self._next_poll = self._clock() + FLIGHT_PARAMETER_POLL_INTERVAL
 
     def poll(self, vehicle):
+        """Reload flight tuning atomically at intervals, and only while disarmed."""
         global settings
         now = self._clock()
         if now < self._next_poll:
@@ -276,6 +282,7 @@ class NotificationSettings:
     none_beeps: int
 
     def __post_init__(self):
+        """Validate notification intervals and ensure beep counts fit supported limits."""
         if not math.isfinite(self.min_interval) or self.min_interval < 0:
             raise ConfigurationError("NOTIFICATIONS_MIN_INTERVAL must be finite and nonnegative")
         if not math.isfinite(self.camera_ready_timeout) or self.camera_ready_timeout <= 0:
@@ -290,6 +297,7 @@ def load_notification_settings(
     env_file: Path = ENV_FILE,
     environ: Optional[Mapping[str, str]] = None,
 ) -> NotificationSettings:
+    """Load operator feedback options from .env and validate each configured value."""
     values = _read_values(env_file, environ)
     parsed = {}
     for field in fields(NotificationSettings):
@@ -324,6 +332,7 @@ class InferenceSettings:
     target_lost_timeout: float = 2.0
 
     def __post_init__(self):
+        """Ensure inference backend and timeouts are supported positive values."""
         if self.backend not in ('luxonis', 'jetson'):
             raise ConfigurationError('INFERENCE_BACKEND must be luxonis or jetson')
         for name in ('max_age', 'target_lost_timeout'):
@@ -334,6 +343,7 @@ class InferenceSettings:
 
 
 def load_inference_settings(env_file: Path = ENV_FILE, environ=None) -> InferenceSettings:
+    """Resolve inference backend, model artifacts, and observation age limits."""
     # Defaults preserve existing installations whose .env predates backend selection.
     values = _read_values(env_file, environ)
     defaults = InferenceSettings()

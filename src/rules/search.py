@@ -3,6 +3,7 @@ import enum
 import config as flight_config
 
 class Direction(enum.Enum):
+    """Represent the two alternating yaw directions used during target search."""
     NONE  = -1
     LEFT  = 0
     RIGHT = 1
@@ -16,11 +17,13 @@ class SearchRule(BaseRule):
     personDirection = Direction.NONE
 
     def isActive(self):
+        """Activate search when no target is visible but a search history exists."""
         # A target must have been observed before search may rotate the vehicle.
         # Fresh detections activate higher-priority rules in Core instead.
         return self.hasSeenPerson
 
     def update(self):
+        """Advance the timed search sweep using the last known target direction."""
         detection = self.camera.closestDetection()
 
         if detection != None:
@@ -41,10 +44,12 @@ class SearchRule(BaseRule):
             self._targetYaw = float((0.0 - flight_config.settings.yaw_rate) if self.personDirection is Direction.LEFT else flight_config.settings.yaw_rate)
 
     def reset(self):
+        """Reset sweep timing and direction before beginning another tracking run."""
         super().reset()
 
         self.hasSeenPerson = False
         self.personDirection = Direction.NONE
 
     def name(self) -> str:
+        """Return the operator-facing label for the target search behavior."""
         return 'search'

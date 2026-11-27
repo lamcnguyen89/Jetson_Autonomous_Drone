@@ -23,6 +23,7 @@ LOITER_POSITION = {
 
 # Restrict a controller output to a safe minimum and maximum value.
 def clamp(value: float, minimum: float, maximum: float) -> float:
+    """Restrict a controller output to an inclusive lower and upper bound."""
     return max(minimum, min(value, maximum))
 
 # Convert forward/right position errors in meters into body-frame velocities.
@@ -32,6 +33,7 @@ def positionErrorToHorizontalVelocity(
     forwardError: float,
     rightError: float,
 ) -> Tuple[float, float]:
+    """Apply deadband and proportional gain, then cap combined horizontal speed."""
     if abs(forwardError) <= flight_config.settings.follow_position_deadband:
         forwardError = 0.0
     if abs(rightError) <= flight_config.settings.follow_position_deadband:
@@ -53,6 +55,7 @@ def positionErrorToHorizontalVelocity(
 # NED is positive downward, so being below the target altitude produces a negative
 # velocity (climb); the result is capped for a controlled correction.
 def altitudeErrorToVerticalVelocity(currentAltitude: float) -> float:
+    """Translate altitude error into a speed-limited NED vertical velocity."""
     # MAVLink NED uses positive Z velocity for down and negative for up.
     verticalVelocity = (
         currentAltitude - flight_config.settings.altitude
@@ -64,6 +67,7 @@ def altitudeErrorToVerticalVelocity(currentAltitude: float) -> float:
     )
 
 def setYaw(vehicle: Vehicle, relativeYaw: float) -> None:
+    """Queue a relative yaw command using MAVLink's condition-yaw command."""
     msg = vehicle.message_factory.command_long_encode(
         0, 0,    # target system, target component
         mavutil.mavlink.MAV_CMD_CONDITION_YAW,

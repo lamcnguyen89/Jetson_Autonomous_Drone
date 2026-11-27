@@ -15,11 +15,13 @@ SITL_BINARIES_BY_SYSTEM = {
 
 
 def is_linux_binary(path):
+    """Check an executable's ELF header to reject binaries for another platform."""
     with open(path, "rb") as binary:
         return binary.read(4) == b"\x7fELF"
 
 
 def sitl_binary_path():
+    """Resolve the correct bundled or overridden ArduPilot SITL executable."""
     override_path = os.environ.get("ARDUPILOT_SITL_BINARY")
     if override_path:
         return str(Path(override_path).expanduser().resolve())

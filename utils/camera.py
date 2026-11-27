@@ -13,6 +13,7 @@ from config import inference_settings, notification_settings
 
 
 def main():
+    """Start the configured camera utility and display its live preview."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--headless', action='store_true')
     parser.add_argument('--seconds', type=float, default=0, help='0 runs until interrupted')
@@ -20,6 +21,7 @@ def main():
     latest = [None]
 
     def callback(detections, frame):
+        """Render or report each detection frame received from the camera backend."""
         # The acquisition worker replaces the latest frame; the main thread
         # owns GUI updates and never accumulates a preview backlog.
         latest[0] = frame

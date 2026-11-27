@@ -8,9 +8,11 @@ class FollowRule(BaseRule):
     '''
 
     def isActive(self):
+        """Activate while a fresh target is available and no higher rule takes priority."""
         return self.camera.closestDetection() != None
 
     def update(self):
+        """Calculate target-relative movement and yaw corrections from camera data."""
         detection = self.camera.closestDetection()
         if detection == None:
             return
@@ -34,6 +36,7 @@ class FollowRule(BaseRule):
         self._targetYaw = yawRate
 
     def headingChange(self, xDistance, zDistance):
+        """Convert the target's horizontal image offset into a bounded yaw correction."""
         # Geometry helper retained for callers; update() above uses the bounded
         # quadratic yaw response rather than this angle calculation.
         # Safeguard against weirdness in detection data
@@ -47,10 +50,13 @@ class FollowRule(BaseRule):
         return float((0.0 - changeDegrees) if isLeftward == True else changeDegrees)
 
     def findHypotenuse(self, angle, zDistance):
+        """Recover horizontal range from viewing angle and measured target depth."""
         return math.cos(math.radians(angle)) * zDistance
 
     def reset(self):
+        """Clear prior target measurements so the next active cycle starts cleanly."""
         super().reset()
 
     def name(self) -> str:
+        """Return the label shown while the controller follows a detected target."""
         return 'follow'

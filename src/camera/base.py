@@ -6,8 +6,10 @@ This base class provides defaults, not hardware acquisition or freshness checks.
 """
 
 class BaseCamera:
+    """Define the camera lifecycle and observation API consumed by flight rules."""
 
     def __init__(self):
+        """Initialize the shared camera base state."""
         pass
 
     def running(self):
@@ -19,12 +21,15 @@ class BaseCamera:
         return False
 
     def detections(self):
+        """Return the current target observation, if the backend has one."""
         return []
 
     def start(self):
+        """Start image capture; subclasses implement backend-specific startup."""
         pass
 
     def stop(self):
+        """Release capture resources; subclasses implement backend-specific shutdown."""
         pass
 
     def closestDetection(self):

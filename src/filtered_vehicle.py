@@ -23,6 +23,7 @@ EVENT_FIELDS = {
 
 
 def enum_name(enum, value):
+    """Format enum-like values safely for readable flight-controller logs."""
     entry = mavutil.mavlink.enums.get(enum, {}).get(value)
     return entry.name if entry is not None else 'UNKNOWN({})'.format(value)
 
@@ -34,6 +35,7 @@ class FlightControllerVehicle(Vehicle):
     """
 
     def __init__(self, handler):
+        """Wrap the MAVLink handler and initialize the vehicle message filters."""
         self._trusted_fc_system_id = None
         self._reported_ignored_sources = set()
         self._last_fc_events = {}
@@ -79,6 +81,7 @@ class FlightControllerVehicle(Vehicle):
                     name, source_system, source_component, details)
 
     def notify_message_listeners(self, name, msg):
+        """Log selected controller messages before forwarding them to DroneKit listeners."""
         # The filter runs before DroneKit updates its attributes/listeners.
         # Filtering only log output would leave the controller state confused.
         if name == "HEARTBEAT":

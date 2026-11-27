@@ -8,6 +8,7 @@ Keeping model-specific bounding boxes out of this object lets the flight rules
 operate on physical distances with either inference processor.
 '''
 class Detection():
+    """Hold one target's relative position, confidence, frame rate, and track ID."""
 
     x = 0
     y = 0
@@ -16,6 +17,7 @@ class Detection():
     fps = 0
 
     def __init__(self, x, y, z, confidence, fps, track_id=None):
+        """Create an immutable-by-convention record of a camera target measurement."""
         # The camera backend has already converted device depth to meters.
 
         self.x = x

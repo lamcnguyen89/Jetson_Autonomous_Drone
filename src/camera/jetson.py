@@ -75,12 +75,14 @@ class TargetLock:
     No predicted position is sent to flight control while the target is absent.
     """
     def __init__(self, timeout):
+        """Set how long to reserve the current target identity during brief loss."""
         self.timeout = timeout
         self.track_id = None
         self.last_seen = None
         self.waiting = False
 
     def update(self, detections, now):
+        """Keep the locked track, wait through short gaps, or acquire nearest target."""
         if self.track_id is not None:
             match = next((d for d in detections if d.track_id == self.track_id), None)
             if match is not None:
@@ -102,6 +104,7 @@ class TargetLock:
 
 
 def create_tracker():
+    """Load BoT-SORT configuration and create the CPU-based identity tracker."""
     # Imports stay optional for Luxonis mode. BoT-SORT runs on CPU; inference
     # uses TensorRT CUDA directly and does not require a CUDA PyTorch wheel.
     # Dependency installation belongs to the installer, never the flight worker.
@@ -119,15 +122,18 @@ class JetsonCamera(PerceptionCamera):
     """Adapt the GPU pipeline to the same lifecycle/position API as YoloCamera."""
     @staticmethod
     def previewSize():
+        """Return the fixed RGB dimensions shared with TensorRT preprocessing."""
         return (640, 360)
 
     def __init__(self, callback=None, config=inference_settings):
+        """Initialize shared camera state and a target lock using configured timeout."""
         super().__init__(callback, config)
         self._thread = None
         self._stop = threading.Event()
         self._target = TargetLock(config.target_lost_timeout)
 
     def start(self):
+        """Reset camera state and launch the background TensorRT worker thread."""
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError('Camera is already running')
         self._stop.clear()
@@ -140,17 +146,21 @@ class JetsonCamera(PerceptionCamera):
         self._thread.start()
 
     def running(self):
+        """Report whether the worker is active and its latest perception is fresh."""
         return not self._stop.is_set() and self._fresh()
 
     def closestDetection(self):
+        """Return the locked target while its observation is fresh."""
         # Preserve the legacy method name while returning the locked target.
         snapshot = self._snapshot
         return snapshot[2] if not self._stop.is_set() and self._fresh(snapshot) else None
 
     def tracking_hold(self):
+        """Report whether a missing target is still within its reserved loss interval."""
         return self._snapshot[3]
 
     def stop(self):
+        """Signal the worker to stop and wait briefly for camera/GPU cleanup."""
         self._stop.set()
         self.ready_event.clear()
         if self._thread is not None and self._thread is not threading.current_thread():

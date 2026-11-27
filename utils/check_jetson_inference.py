@@ -17,6 +17,7 @@ from config import inference_settings
 
 
 def main():
+    """Check that the configured Jetson model can initialize and run inference."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', type=Path, help='Omit to run on a blank 640x360 image')
     parser.add_argument('--iterations', type=int, default=30)

@@ -19,9 +19,11 @@ import math
 STOP = False
 
 def gpxToUnix(time):
+    """Convert a GPX timestamp into Unix seconds for playback scheduling."""
     return time.timestamp() * 1000
 
 def interpolate(currentPoint, nextPoint, offsetSinceCurrent):
+    """Interpolate position between adjacent GPX points at the requested offset."""
     percent = (gpxToUnix(nextPoint.time) - gpxToUnix(currentPoint.time)) / offsetSinceCurrent
 
     deltaLat = nextPoint.latitude - currentPoint.latitude
@@ -33,6 +35,7 @@ def interpolate(currentPoint, nextPoint, offsetSinceCurrent):
     return GPXTrackPoint(latInter, lonInter)
 
 def thread(gpx, callback):
+    """Replay GPX samples at their recorded timing and publish each position."""
     global STOP
     points = gpx.tracks[0].segments[0].points
 
@@ -84,14 +87,17 @@ class MockCamera(BaseCamera):
     }
 
     def __init__(self, vehicle):
+        """Bind simulated position updates to the vehicle used by flight rules."""
         self.vehicle = vehicle
 
     def running(self):
+        """Report whether GPX playback and mock camera output are active."""
         # This mock represents an always-available sensor; real camera workers
         # additionally check errors, shutdown and measurement freshness.
         return True
 
     def playbackGPXFromFile(self, filepath):
+        """Load a GPX track and begin replaying its coordinates as target positions."""
         file = open(filepath, 'r')
         if file == None:
             raise 'Cannot open GPX file at path: ' + filepath
@@ -102,6 +108,7 @@ class MockCamera(BaseCamera):
         self.gpxThread.start()
 
     def _gpxThreadCallback(self, point):
+        """Apply one replayed GPX point to the simulated target location."""
         self.setGlobalCoordinate(point.latitude, point.longitude)
 
     def setGlobalCoordinate(self, latitude, longitude):
@@ -156,6 +163,7 @@ class MockCamera(BaseCamera):
         # print('DEBUG :: new mock detection. x: ' + str(xDistance) + ', z: ' + str(zDistance) + ', bearingDifference: ' + str(angle) + ', newHeading: ' + str(newHeading))
 
     def stop(self):
+        """Stop playback and mark the mock camera as unavailable to flight control."""
         global STOP
 
         STOP = True
@@ -167,9 +175,11 @@ class MockCamera(BaseCamera):
         super().stop()
 
     def detections(self):
+        """Return a simulated target observation based on current vehicle geometry."""
         return self._detections
 
     def headingBetween(self, lat1, lon1, lat2, lon2):
+        """Calculate the compass bearing from one geographic point to another."""
         # https://stackoverflow.com/a/17662363
         dLon = lon2 - lon1
         y = math.sin(dLon) * math.cos(lat2)
@@ -186,6 +196,7 @@ class MockCamera(BaseCamera):
         return bearing
 
     def vehicleYaw(self):
+        """Read and normalize the simulated vehicle's current heading in degrees."""
         yaw = math.degrees(self.vehicle.attitude.yaw)
 
         if yaw > 360:
@@ -196,6 +207,7 @@ class MockCamera(BaseCamera):
         return yaw
 
     def distanceBetween(self, lat1, lon1, lat2, lon2):
+        """Calculate ground distance between two latitude/longitude coordinates."""
         lat1 = math.radians(lat1)
         lat2 = math.radians(lat2)
         lon1 = math.radians(lon1)

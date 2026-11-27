@@ -113,6 +113,7 @@ class CudaRuntime:
     All nonzero CUDA results become worker errors rather than stale outputs.
     """
     def __init__(self):
+        """Load CUDA runtime symbols and assign ctypes signatures for safe calls."""
         self.lib = ctypes.CDLL('libcudart.so.12')
         pointer = ctypes.c_void_p
         signatures = {
@@ -130,6 +131,7 @@ class CudaRuntime:
         self.call('cudaSetDevice', 0)
 
     def call(self, name, *args):
+        """Call a CUDA runtime entry point and raise if its status is nonzero."""
         status = getattr(self.lib, name)(*args)
         if status != 0:
             raise RuntimeError(f'{name} failed with CUDA error {status}')
@@ -142,6 +144,7 @@ class TensorRTYolo:
     buffers are not designed for concurrent inference from multiple threads.
     """
     def __init__(self, path):
+        """Validate and deserialize the engine, allocate GPU buffers, and warm it up."""
         path = Path(path)
         self.manifest = validate_manifest(path)
         self.trt = load_tensorrt()
@@ -212,6 +215,7 @@ class TensorRTYolo:
         return decode(host_output, frame.shape, transform)
 
     def close(self):
+        """Synchronize outstanding GPU work and release buffers, stream, and engine."""
         # Finish outstanding work before releasing the context, buffers or stream.
         if self.stream.value:
             self.cuda.call('cudaStreamSynchronize', self.stream)

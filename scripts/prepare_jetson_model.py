@@ -42,6 +42,7 @@ def reuse_prepared_engine(output, runtime_version):
 
 
 def main(argv=None):
+    """Validate or prepare the Jetson TensorRT engine required by the GPU backend."""
     from config import inference_settings
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--onnx', type=Path, help='Previously exported YOLO26m ONNX, skip PyTorch export')

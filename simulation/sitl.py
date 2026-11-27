@@ -12,6 +12,7 @@ if __package__ in (None, ""):
 
 
 def main():
+    """Launch the configured ArduPilot SITL process and connect the simulator UI."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--verbose', action='store_true', help='Show ArduPilot output')
     args = parser.parse_args()
@@ -21,6 +22,7 @@ def main():
     core, vehicle, camera, sitl, ui = prepareForTest(timeout=False, verbose=args.verbose)
 
     def uicallback(data):
+        """Apply browser control messages to the simulated vehicle and camera."""
         # Map interaction changes only the synthetic person's location. Normal
         # Core rules decide how the virtual aircraft responds to that detection.
         if data['type'] == 'control':

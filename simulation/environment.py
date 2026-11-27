@@ -24,11 +24,13 @@ from .paths import DEFAULTS_FILE, sitl_binary_path
 ACTIVE_THREADS = []
 
 def core_thread(core):
+    """Run the simulated flight-control loop in a background thread."""
     print('running core thread...')
     core.run()
     print('stopped core thread')
 
 def ui_thread(ui: UIConnection, core: Core, vehicle: Vehicle, camera: MockCamera):
+    """Stream simulation state and handle UI commands until the connection closes."""
     # Publish a slower UI view independently of the control loop so rendering
     # cadence does not determine how often the simulated vehicle is commanded.
     print('running ui thread...')

@@ -46,12 +46,15 @@ videoWriter        = None
 
 # See: https://stackoverflow.com/a/66209331
 class LoggerWriter:
+    """Adapt writes to stdout/stderr into calls to the application's logger."""
     """Route legacy print() output through the same file/journal logging handlers."""
     def __init__(self, logfct):
+        """Store the logging function that will receive complete output lines."""
         self.logfct = logfct
         self.buf = []
 
     def write(self, msg):
+        """Send each nonblank line from a stream write to the configured logger."""
         if msg.endswith('\n'):
             self.buf.append(msg.removesuffix('\n'))
             self.logfct(''.join(self.buf))
@@ -60,9 +63,11 @@ class LoggerWriter:
             self.buf.append(msg)
 
     def flush(self):
+        """Provide the no-op flush method expected by file-like stream consumers."""
         pass
 
 def core_thread(core):
+    """Run the flight controller loop on a worker and log unexpected failures."""
     global EXIT
 
     if EXIT:
@@ -78,10 +83,12 @@ def core_thread(core):
         logging.info('Control thread stopped')
 
 def camera_callback(detections, cvFrame):
+    """Receive camera output for optional preview or application-level handling."""
     global videoWriter
     videoWriter.write(cvFrame)
 
 def stop():
+    """Set the shared shutdown signal used by the main and worker loops."""
     global EXIT, core, camera, vehicle
 
     EXIT = True
@@ -93,6 +100,7 @@ def stop():
         camera.stop()
 
 def signal_handler(sig, frame):
+    """Translate an operating-system termination signal into graceful shutdown."""
     logging.info('Received signal %s; stopping service', signal.Signals(sig).name)
     stop()
 
@@ -120,6 +128,7 @@ def wait_for_camera_ready(camera, timeout, should_stop):
 
 
 def prepare_tracking_core(vehicle, camera, should_stop):
+    """Wait for camera readiness, then build the notifier and flight-control core."""
     # Readiness is the intersection of perception output and a fresh heartbeat
     # from the trusted autopilot. Notifications describe that state afterward.
     if not wait_for_camera_ready(camera, notification_settings.camera_ready_timeout, should_stop):
@@ -143,6 +152,7 @@ def prepare_tracking_core(vehicle, camera, should_stop):
 
 
 def main(args):
+    """Load settings, connect hardware, start workers, and coordinate shutdown."""
     global EXIT, core, camera, vehicle, videoWriter
 
     thread = None

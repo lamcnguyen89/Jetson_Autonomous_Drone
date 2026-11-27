@@ -7,12 +7,14 @@ class BackoffRule(BaseRule):
     '''
 
     def isActive(self):
+        """Activate when a current target is closer than the configured safe distance."""
         # Core evaluates backoff first, so this threshold can suppress following.
         # The camera owns target selection; Jetson's result may be a locked ID.
         return self.camera.closestDetection() != None and \
             self.camera.closestDetection().z < flight_config.settings.backoff_distance
 
     def update(self):
+        """Refresh the proximity observation used to decide whether to back away."""
         detection = self.camera.closestDetection()
         if detection == None:
             return
@@ -25,4 +27,5 @@ class BackoffRule(BaseRule):
         self._targetPosition = (zDistance - flight_config.settings.minimum_distance, xDistance)
 
     def name(self) -> str:
+        """Return the operator-facing label for the proximity rule."""
         return 'backoff'

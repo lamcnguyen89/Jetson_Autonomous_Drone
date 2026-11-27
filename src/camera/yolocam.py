@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _get_packet(queue):
+    """Fetch a queued device packet while checking the worker's shutdown signal."""
     # Poll so startup cancellation or a readiness timeout can stop an idle
     # pipeline; a blocking get() could otherwise keep the camera thread alive.
     while not THREAD_STOP:
@@ -40,6 +41,7 @@ def _get_packet(queue):
     return None
 
 def thread(callback, _pipeline, outputFrames):
+    """Own the DepthAI device loop and pass each completed result to its callback."""
     global THREAD_STOP, RUNNING
 
     with dai.Device(_pipeline) as device:
@@ -149,9 +151,11 @@ class YoloCamera(PerceptionCamera):
     _userCallback = None
 
     def previewSize():
+        """Return the RGB preview width and height used by the OAK pipeline."""
         return (416, 416)
 
     def __init__(self, callback=None, config=inference_settings):
+        """Store backend settings and initialize the shared detection publisher."""
         super().__init__(callback, config)
         self._detections = []
         self._thread = None
@@ -159,6 +163,7 @@ class YoloCamera(PerceptionCamera):
         self._userCallback = callback
 
     def setup(self):
+        """Construct the DepthAI graph and initialize camera and inference queues."""
         # Defining nodes describes device work; dai.Device in the worker starts it.
         self._pipeline = dai.Pipeline()
 
@@ -220,11 +225,13 @@ class YoloCamera(PerceptionCamera):
         self._stereo.depth.link(self._spatialDetectionNetwork.inputDepth)
 
     def running(self):
+        """Report whether camera capture is active and its latest result is fresh."""
         global RUNNING
 
         return RUNNING and not THREAD_STOP and self._fresh()
 
     def start(self):
+        """Prepare device state and start the camera processing thread."""
         global THREAD_STOP, RUNNING
         if self._thread is not None and self._thread.is_alive():
             raise RuntimeError('Camera is already running')
@@ -238,6 +245,7 @@ class YoloCamera(PerceptionCamera):
         self._thread.start()
 
     def _run(self):
+        """Run the capture loop, publish inference results, and handle worker errors."""
         global RUNNING
         try:
             thread(self._callback, self._pipeline, self._userCallback is not None)
@@ -250,6 +258,7 @@ class YoloCamera(PerceptionCamera):
             self.stopped_event.set()
 
     def stop(self):
+        """Request worker shutdown and release the device and associated queues."""
         global THREAD_STOP
         THREAD_STOP = True
         self.ready_event.clear()
@@ -259,6 +268,7 @@ class YoloCamera(PerceptionCamera):
                 logger.warning('Camera thread did not stop within five seconds')
 
     def _callback(self, detections, frame, captured_at=None):
+        """Convert model output to shared Detection objects and publish the frame."""
         if THREAD_STOP:
             return
         self._publish(detections, frame, captured_at)

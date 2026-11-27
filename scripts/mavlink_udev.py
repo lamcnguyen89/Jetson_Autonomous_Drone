@@ -59,6 +59,7 @@ def build_rule(device, properties):
 
 
 def inspect_port(port):
+    """Inspect a serial device and return its safe persistent udev identity."""
     device = Path(port).resolve(strict=True)
     if device.parent != Path("/dev") or not stat.S_ISCHR(device.stat().st_mode):
         raise ValueError(f"{port} must resolve to a serial character device under /dev")
@@ -73,6 +74,7 @@ def inspect_port(port):
 
 
 def main():
+    """Generate a persistent udev rule for the selected MAVLink serial device."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("port", help="MAVLINK_PORT from the project .env")
     parser.add_argument("output", type=Path, help="Generated .rules file")
